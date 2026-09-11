@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: lakehouse-flow-test
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  datasource:
+    url: jdbc:postgresql://localhost:5432/lakehouse_flow_test
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8081
+
+logging:
+  level:
+    root: WARN
+    io.github.lakehouseflow: DEBUG

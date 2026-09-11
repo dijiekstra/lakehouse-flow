@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: lakehouse-flow-test
+  # Disable JPA/Hibernate for tests (requires PostgreSQL JSONB support)
+  jpa:
+    open-in-view: false
+  # Disable Flyway for tests
+  flyway:
+    enabled: false
+  # Use mock datasource that won't actually connect
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    username: sa
+    password:
+
+server:
+  port: 8081
+
+logging:
+  level:
+    root: WARN
+    io.github.lakehouseflow: INFO

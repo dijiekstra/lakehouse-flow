@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: lakehouse-flow-postgres
+    environment:
+      POSTGRES_DB: lakehouse_flow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./lakehouse-flow-dao/src/main/resources/db/migration:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lakehouse_flow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lakehouse-flow-net
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: lakehouse-flow-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@lakehouse-flow.io
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lakehouse-flow-net
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  lakehouse-flow-net:
+    driver: bridge
