@@ -1,5 +1,8 @@
 # Lakehouse Flow
 
+[![Maven Build and Test](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/maven-build.yml/badge.svg?branch=master)](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/maven-build.yml)
+[![Code Quality Checks](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/code-quality.yml/badge.svg?branch=master)](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/code-quality.yml)
+
 Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
 当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。真实环境整体 E2E、Iceberg/Hudi 适配器、具体 MQ 产品绑定和 UI 仍是后续工作。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。
@@ -118,10 +121,10 @@ password postgres
 ### 构建与测试
 
 ```bash
-./mvnw clean test
+./mvnw clean verify
 ```
 
-当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于后续 Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、调度决策、意图交付、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
+默认分支 `master` 的 GitHub Actions 使用 JDK 17 和 Maven Wrapper 执行同一条命令。Service 模块在 `verify` 阶段强制要求 line coverage >= 90%、branch coverage >= 65%；校验成功后才触发 Boot JAR 构建产物 workflow。当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于后续 Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、调度决策、意图交付、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
 
 Lakehouse Flow 内部扫描 READY 决策并写入 `scheduling_intent`。每条 intent 选择一个路由：`DATABASE_TABLE` 供下游轮询专用表，`HTTP` 由内部 publisher 主动 POST，`MQ` 由内部 publisher 调用部署提供的 `SchedulingIntentMessageGateway`。下游始终被动接收，不调用 Lakehouse Flow 抢占任务。REST 接口仅供审计：
 

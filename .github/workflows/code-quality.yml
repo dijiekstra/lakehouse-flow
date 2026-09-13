@@ -1,0 +1,62 @@
+name: Code Quality Checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-policy:
+    name: Repository Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: "**/pom.xml"
+
+      - name: Check changed-file whitespace
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git diff --check "$BASE_SHA" "$GITHUB_SHA"
+          else
+            git diff-tree --check --root "$GITHUB_SHA"
+          fi
+
+      - name: Enforce repository build policy
+        shell: bash
+        run: |
+          test -x ./mvnw
+          if grep -R -nE 'run:[[:space:]]*mvn([[:space:]]|$)' .github/workflows; then
+            echo "Use ./mvnw for every workflow Maven invocation."
+            exit 1
+          fi
+          if grep -R -nE 'actions/(checkout|setup-java|upload-artifact)@v3' .github/workflows; then
+            echo "Deprecated v3 GitHub actions are not allowed."
+            exit 1
+          fi
+
+      - name: Compile all modules
+        run: ./mvnw -B -ntp -DskipTests compile

@@ -1,0 +1,78 @@
+name: Build Artifacts
+
+on:
+  workflow_run:
+    workflows: ["Maven Build and Test"]
+    branches: [master]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-artifacts-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-artifacts:
+    name: Verified Boot Artifact
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout verified source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: "**/pom.xml"
+
+      - name: Rebuild verified artifacts
+        run: ./mvnw -B -ntp clean verify
+
+      - name: Resolve build identity
+        id: build
+        shell: bash
+        env:
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          VERSION=$(./mvnw -B -ntp help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${BUILD_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate build information
+        shell: bash
+        env:
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          BUILD_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          BUILD_VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          mkdir -p build-info
+          {
+            echo "Project: Lakehouse Flow"
+            echo "Version: $BUILD_VERSION"
+            echo "Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "Git Commit: $BUILD_SHA"
+            echo "Branch: $BUILD_BRANCH"
+            echo "Java: 17"
+            echo "Verification: ./mvnw clean verify"
+          } > build-info/BUILD_INFO.txt
+
+      - name: Upload Boot artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lakehouse-flow-${{ steps.build.outputs.version }}-${{ steps.build.outputs.short_sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            lakehouse-flow-boot/target/*.jar
+            build-info/BUILD_INFO.txt

@@ -2,7 +2,7 @@
 
 **最后更新**: 2026-09-13
 **基准用途**: 后续开发进度、差距检查和版本目标均以本文档为准。
-**当前推进项**: 补数功能模型已达到退出标准；G2 已统一到发布 FlowPlan；G7 已补齐 delivery/source 指标和双轨 AssetState 对账；G11/G12 已完成 snapshot 路由隔离和跨实例目标日期准入；G14 已完成调度决策与等待积压可观测性。下一功能项回到 G13 高级并发策略；G8 查询聚合、G9 可信身份/RBAC、G10 整体 E2E 与 Iceberg/Hudi adapter 均按当前决策后移。
+**当前推进项**: P0 正确性与工程门槛已闭合并由默认分支 CI 强制验证；补数功能模型已达到退出标准；G2、G7、G11、G12、G14 已完成当前范围。下一功能项进入 P1 的 G13 高级并发策略；G8 查询聚合、G9 可信身份/RBAC、G10 整体 E2E 与 Iceberg/Hudi adapter 均按当前决策后移。
 
 ## 目标边界
 
@@ -11,6 +11,16 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 它只负责调度侧决策、调度意图记录、调度审计和 snapshot 推进确认，不负责真实任务执行，不内置 executor，不接管下游资源队列。
 
 系统判断成功或失败时，以目标数据资产的 snapshot 是否按预期推进为准。Workflow/Task 状态只用于调度决策、意图交付和审计视图，不能演变成执行状态机。
+
+## 优先级基线
+
+| 优先级 | 判定标准 | 当前状态 |
+|--------|----------|----------|
+| P0 | 会破坏 snapshot 归因、幂等、DAG 顺序、目标日期互斥、事务/offset 一致性、可恢复性、构建可复现性或“只调度不执行”边界 | 当前已闭合；必须持续由单测、覆盖率门槛和默认分支 CI 守护 |
+| P1 | 不破坏现有正确性，但影响核心调度能力完整度，例如明确失败关闭的高级并发/去重策略 | 下一步推进 G13 `SERIAL_DISCARD` / `SERIAL_PRIORITY` / `dedupeWindow` |
+| P2 | 查询/UI、可信身份/RBAC、特定 MQ 产品绑定、更多湖格式和整体 E2E 等已明确后移能力 | 保持延期，不因“尚未实现”自动升级为 P0 |
+
+P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实湖环境和多 scheduler 节点验证仍是投产前验收项，但按当前决策暂不阻塞功能推进。
 
 ## 版本目标
 
@@ -66,6 +76,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 | G12 | 跨实例目标资产日期准入缺失 | 基础完成 | LF-0.5 | 已建立同 `targetAssetKey + bizDate` 的持久化唯一槽位和行锁，覆盖正常、补数、恢复、重跑；冲突项留在 READY，确认/超时释放，过期租约可被重占且旧 holder 不能释放新 holder。真实 PostgreSQL 竞争语义待整体 E2E 验证。 |
 | G13 | 发布版本控制策略未执行 | 基础完成 | LF-0.5 | 已执行版本/节点确认超时、版本目标准入租约和 `maxActiveInstances`；支持 `PARALLEL` / `SERIAL_WAIT`，超限保持 READY。`SERIAL_DISCARD`、优先级队列和 dedupe window 尚未实现。 |
 | G14 | 调度决策可观测性不足 | 已完成 | LF-0.5 | 已按低基数结果记录发布版本检查、自然触发决策和耗时，按稳定状态/类别聚合 task 与补数等待积压，并输出高维结构化证据和 Prometheus 初始告警基线。 |
+| G15 | 默认分支 CI/CD 与 Agent 约束失真 | 已完成 | 工程基线 | workflow 已迁移到 `master`，统一 JDK 17 + `./mvnw`，修复废弃 action，强制 Service 覆盖率门槛并在 CI 成功后构建产物；Copilot agent 已移除执行器和下游状态模型。 |
 
 ## 已完成推进项
 
@@ -226,6 +237,18 @@ G13 剩余增强：
 
 G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、补数稳定阻塞类别和初始告警口径均具备低基数指标与直接单元测试。已达到，后续只按真实运行反馈校准阈值。
 
+### G15: CI/CD 与 Agent 工程基线
+
+已完成：
+
+1. 确认 Copilot workflow 只存在于过时的 `main` 分支，默认 `master` 推送不会触发；最近两次 Maven/Artifact workflow 又因 `actions/upload-artifact@v3` 在 job 初始化阶段失败。
+2. 在默认分支新增 Maven Build、Repository Policy 和 Build Artifacts workflow，分别负责完整验证、仓库规则检查和验证通过后的 Boot JAR 产物。
+3. GitHub Actions 统一 JDK 17、`./mvnw` 和当前 action 主版本，移除伪成功的可选 Checkstyle/依赖扫描步骤及不必要的 PostgreSQL service。
+4. Service JaCoCo line 90%、branch 65% 门槛绑定 `verify` 阶段，低于门槛会直接使本地和 CI 构建失败。
+5. 重写 Copilot custom agent，以当前进度文档为真源，明确禁止执行器、任务运行状态回调和旧 `AssetDependency` 路径。
+
+退出标准：本地 `./mvnw clean verify` 通过覆盖率门槛，默认分支三条 workflow 真实运行成功。远端运行结果在本次提交推送后核验。
+
 ## 最近完成推进项
 
 ### G4 / G5 / LF-0.4: Action 与补数控制能力增强
@@ -337,12 +360,12 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 
 当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。Testcontainers 留到后续系统级 E2E：从 API/事件入口贯穿 PostgreSQL/Flyway、事务与约束、FlowPlan 决策、内部 outbox 发布、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独模块，也不用来替代当前单元测试。
 
-2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean test` 共 308 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 91.1%、branch 69.5%、method 90.6%。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 decision metrics 为 2/2、scheduling backlog metrics 为 1/1、delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
+2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean verify` 共 308 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 91.1%、branch 69.5%、method 90.6%，line 90% 和 branch 65% 构建门槛实际通过。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 decision metrics 为 2/2、scheduling backlog metrics 为 1/1、delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
 
 每次推进后至少执行：
 
 ```bash
-./mvnw test
+./mvnw verify
 git diff --check
 ```
 
