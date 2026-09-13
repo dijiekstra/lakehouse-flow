@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.service;
 
+import io.github.lakehouseflow.common.SnapshotIds;
 import io.github.lakehouseflow.dao.AssetStateRepository;
 import io.github.lakehouseflow.model.AssetState;
 import io.github.lakehouseflow.model.LakehouseEvent;
@@ -9,14 +10,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Service for managing asset state and ensuring monotonic updates.
  *
- * Key responsibility: Update asset state based on events while ensuring:
+ * Key responsibility: project table and partition state while ensuring:
  * - Newer snapshots always overwrite older ones
  * - Watermarks move forward monotonically
+ * - Schema identity follows the snapshot that established the current table state
  * - Version is incremented for optimistic locking
  */
 @Service
@@ -38,7 +45,42 @@ public class AssetStateService {
      * Returns: AssetState after update (or unchanged if event is stale)
      */
     public AssetState updateAssetStateFromEvent(LakehouseEvent event) {
-        String assetKey = buildAssetKey(event);
+        return updateAssetStateForScope(event, normalizePartition(event.getPartitionName()));
+    }
+
+    /**
+     * Project one table snapshot into table-level and changed-partition states.
+     *
+     * The table snapshot remains globally monotonic, while each partition gets
+     * an independent AssetState key. This prevents a historical backfill
+     * partition from satisfying a current-date partition dependency.
+     *
+     * @param event snapshot observation containing optional changedPartitions
+     * @return updated table state followed by changed partition states
+     */
+    public List<AssetState> projectAssetStatesFromEvent(LakehouseEvent event) {
+        if (event == null) {
+            throw new IllegalArgumentException("lakehouse event is required");
+        }
+        List<AssetState> states = new ArrayList<>();
+        states.add(updateAssetStateForScope(event, null));
+        changedPartitions(event).forEach(partition ->
+                states.add(updateAssetStateForScope(event, partition)));
+        return List.copyOf(states);
+    }
+
+    /**
+     * Update or create one table or partition projection.
+     *
+     * @param event source snapshot observation
+     * @param partitionName projection partition, or null for table scope
+     * @return persisted or unchanged state
+     */
+    private AssetState updateAssetStateForScope(LakehouseEvent event, String partitionName) {
+        if (event == null) {
+            throw new IllegalArgumentException("lakehouse event is required");
+        }
+        String assetKey = buildAssetKey(event, partitionName);
 
         // Find existing asset state
         Optional<AssetState> existing = assetStateRepository.findByAssetKey(assetKey);
@@ -64,7 +106,7 @@ public class AssetStateService {
                     .catalogName(event.getCatalogName())
                     .databaseName(event.getDatabaseName())
                     .tableName(event.getTableName())
-                    .partitionName(event.getPartitionName())
+                    .partitionName(partitionName)
                     .latestSnapshotId(event.getSnapshotId())
                     .latestSchemaId(event.getSchemaId())
                     .latestWatermark(event.getWatermark())
@@ -81,58 +123,112 @@ public class AssetStateService {
     }
 
     /**
+     * Collect explicit and manifest-derived changed partitions without duplicates.
+     *
+     * @param event source snapshot observation
+     * @return normalized changed partition names in source order
+     */
+    private Set<String> changedPartitions(LakehouseEvent event) {
+        Set<String> partitions = new LinkedHashSet<>();
+        addPartition(partitions, event.getPartitionName());
+        if (event.getPayloadJson() == null) {
+            return partitions;
+        }
+        Object rawPartitions = event.getPayloadJson().get("changedPartitions");
+        if (rawPartitions instanceof Collection<?> changed) {
+            changed.forEach(partition -> addPartition(partitions, String.valueOf(partition)));
+        }
+        return partitions;
+    }
+
+    /**
+     * Add one nonblank normalized partition to a projection set.
+     *
+     * @param partitions target partition set
+     * @param candidate candidate partition text
+     */
+    private void addPartition(Set<String> partitions, String candidate) {
+        String normalized = normalizePartition(candidate);
+        if (normalized != null) {
+            partitions.add(normalized);
+        }
+    }
+
+    /**
+     * Normalize an optional partition name.
+     *
+     * @param partitionName source partition name
+     * @return trimmed partition name, or null when blank
+     */
+    private String normalizePartition(String partitionName) {
+        return partitionName == null || partitionName.isBlank() ? null : partitionName.trim();
+    }
+
+    /**
      * Check if event is newer than current state
      */
     private boolean isEventNewer(AssetState state, LakehouseEvent event) {
-        // If event has snapshot ID, compare lexicographically
-        if (event.getSnapshotId() != null && state.getLatestSnapshotId() != null) {
-            int comparison = event.getSnapshotId().compareTo(state.getLatestSnapshotId());
-            if (comparison > 0) return true;
-            if (comparison < 0) return false;
-        }
-
-        // If event has watermark, compare timestamps
-        if (event.getWatermark() != null && state.getLatestWatermark() != null) {
-            return event.getWatermark().isAfter(state.getLatestWatermark());
-        }
-
-        // Default: use commit time
-        if (event.getCommitTime() != null && state.getLatestCommitTime() != null) {
-            return event.getCommitTime().isAfter(state.getLatestCommitTime());
-        }
-
-        return false;
+        return isIdentifierAfter(event.getSnapshotId(), state.getLatestSnapshotId())
+                || event.getSnapshotId() == null
+                        && (isTimeAfter(event.getWatermark(), state.getLatestWatermark())
+                                || isTimeAfter(event.getCommitTime(), state.getLatestCommitTime()));
     }
 
     /**
      * Update asset state fields from event
      */
     private void updateAssetStateFields(AssetState state, LakehouseEvent event) {
-        if (event.getSnapshotId() != null) {
+        boolean snapshotAdvanced =
+                isIdentifierAfter(event.getSnapshotId(), state.getLatestSnapshotId());
+        if (snapshotAdvanced) {
             state.setLatestSnapshotId(event.getSnapshotId());
-        }
-        if (event.getSchemaId() != null) {
+            if (event.getSchemaId() != null) {
+                state.setLatestSchemaId(event.getSchemaId());
+            }
+        } else if (event.getSnapshotId() == null && event.getSchemaId() != null) {
             state.setLatestSchemaId(event.getSchemaId());
         }
-        if (event.getWatermark() != null) {
+        if (isTimeAfter(event.getWatermark(), state.getLatestWatermark())) {
             state.setLatestWatermark(event.getWatermark());
         }
-        if (event.getCommitTime() != null) {
+        if (isTimeAfter(event.getCommitTime(), state.getLatestCommitTime())) {
             state.setLatestCommitTime(event.getCommitTime());
         }
         // Version is auto-incremented by @Version
     }
 
     /**
+     * Compare nullable snapshot-like identifiers without allowing state regression.
+     *
+     * @param candidate newly observed identifier
+     * @param current currently projected identifier
+     * @return true when the candidate establishes or advances the identifier
+     */
+    private boolean isIdentifierAfter(String candidate, String current) {
+        return candidate != null && (current == null || SnapshotIds.isAfter(candidate, current));
+    }
+
+    /**
+     * Compare nullable timestamps without allowing state regression.
+     *
+     * @param candidate newly observed timestamp
+     * @param current currently projected timestamp
+     * @return true when the candidate establishes or advances the timestamp
+     */
+    private boolean isTimeAfter(LocalDateTime candidate, LocalDateTime current) {
+        return candidate != null && (current == null || candidate.isAfter(current));
+    }
+
+    /**
      * Build asset key from event
      */
-    private String buildAssetKey(LakehouseEvent event) {
-        if (event.getPartitionName() != null) {
+    private String buildAssetKey(LakehouseEvent event, String partitionName) {
+        if (partitionName != null) {
             return String.format("%s.%s.%s.%s",
                     event.getCatalogName(),
                     event.getDatabaseName(),
                     event.getTableName(),
-                    event.getPartitionName());
+                    partitionName);
         }
         return String.format("%s.%s.%s",
                 event.getCatalogName(),

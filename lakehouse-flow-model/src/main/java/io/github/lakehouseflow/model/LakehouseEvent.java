@@ -5,8 +5,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.hibernate.annotations.JdbcType;
-import org.hibernate.type.descriptor.jdbc.JsonJdbcType;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -80,13 +80,16 @@ public class LakehouseEvent {
     private String partitionName;
 
     /**
-     * Snapshot ID from table format
+     * Adapter-normalized monotonic snapshot coordinate used for scheduling comparisons.
+     *
+     * <p>When a format's native snapshot id is not ordered, the adapter stores the native value in
+     * {@code payloadJson} and projects an ordered sequence or instant here.
      */
     @Column(name = "snapshot_id", length = 255)
     private String snapshotId;
 
     /**
-     * Schema ID (hash or version)
+     * Source-native schema identifier associated with this snapshot.
      */
     @Column(name = "schema_id", length = 255)
     private String schemaId;
@@ -113,7 +116,7 @@ public class LakehouseEvent {
      * Raw event metadata as JSON (for debugging and future extensions)
      */
     @Column(name = "payload_json", columnDefinition = "jsonb")
-    @JdbcType(JsonJdbcType.class)
+    @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> payloadJson;
 
     /**
@@ -134,6 +137,9 @@ public class LakehouseEvent {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * Initialize audit timestamps and observed time before insert.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
@@ -141,6 +147,9 @@ public class LakehouseEvent {
         if (observedAt == null) observedAt = LocalDateTime.now();
     }
 
+    /**
+     * Refresh the update timestamp before changing the raw event record.
+     */
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();

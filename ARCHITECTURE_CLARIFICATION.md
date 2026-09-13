@@ -1,5 +1,7 @@
 # Lakehouse Flow - 架构定位澄清
 
+> 历史文档：保留用于追溯早期方案。文中的下游 READY 查询和 executor callback 均已废弃；当前由 Lakehouse Flow 内部发布 outbox，也不使用 `RUNNING/SUCCESS/FAILED` 判断结果。请以 `ARCHITECTURE.md` 和 `PHASE2_PROGRESS.md` 为准。
+
 **日期**: 2026-09-11  
 **版本**: 0.1.0-SNAPSHOT
 
@@ -317,4 +319,3 @@ Week 2 (2-3 days):
 **预计投入**: 2-3 天
 
 **交付**: 从 Paimon 快照到 READY 任务的完整链路
-

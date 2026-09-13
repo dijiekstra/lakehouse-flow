@@ -124,20 +124,20 @@ CREATE INDEX idx_task_definition_code ON task_definition(code);
 CREATE INDEX idx_task_definition_workflow ON task_definition(workflow_code, workflow_version);
 
 -- ============================================================================
--- 6. WORKFLOW_INSTANCE - One execution of a workflow
+-- 6. WORKFLOW_INSTANCE - One scheduling decision for a workflow
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS workflow_instance (
     id BIGSERIAL PRIMARY KEY,
     instance_key VARCHAR(255) NOT NULL UNIQUE,
     workflow_code VARCHAR(255) NOT NULL,
     workflow_version INTEGER NOT NULL,
-    biz_date DATE NOT NULL,
+    biz_date TIMESTAMP NOT NULL,
     trigger_type VARCHAR(50) NOT NULL,
     trigger_event_id VARCHAR(255),
     trigger_reason TEXT,
     state VARCHAR(50) NOT NULL DEFAULT 'CREATED',
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
+    scheduled_at TIMESTAMP,
+    last_snapshot_check_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -148,7 +148,7 @@ CREATE INDEX idx_workflow_instance_state ON workflow_instance(state, updated_at 
 CREATE INDEX idx_workflow_instance_biz_date ON workflow_instance(biz_date DESC);
 
 -- ============================================================================
--- 7. TASK_INSTANCE - One execution of a task
+-- 7. TASK_INSTANCE - One scheduling decision for a task
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS task_instance (
     id BIGSERIAL PRIMARY KEY,
@@ -156,16 +156,14 @@ CREATE TABLE IF NOT EXISTS task_instance (
     workflow_instance_id BIGINT NOT NULL,
     task_code VARCHAR(255) NOT NULL,
     task_version INTEGER NOT NULL,
-    biz_date DATE NOT NULL,
+    biz_date TIMESTAMP NOT NULL,
     state VARCHAR(50) NOT NULL DEFAULT 'CREATED',
     waiting_reason TEXT,
-    try_number INTEGER NOT NULL DEFAULT 1,
-    max_retries INTEGER NOT NULL DEFAULT 3,
-    executor_type VARCHAR(50),
-    external_job_id VARCHAR(255),
-    submit_time TIMESTAMP,
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
+    target_asset_key VARCHAR(255),
+    baseline_snapshot_id VARCHAR(255),
+    observed_snapshot_id VARCHAR(255),
+    scheduled_at TIMESTAMP,
+    last_snapshot_check_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (workflow_instance_id) REFERENCES workflow_instance(id) ON DELETE CASCADE
@@ -174,7 +172,7 @@ CREATE TABLE IF NOT EXISTS task_instance (
 CREATE INDEX idx_task_instance_instance_key ON task_instance(instance_key);
 CREATE INDEX idx_task_instance_workflow_instance ON task_instance(workflow_instance_id, task_code);
 CREATE INDEX idx_task_instance_state ON task_instance(state, updated_at DESC);
-CREATE INDEX idx_task_instance_external_job ON task_instance(external_job_id) WHERE external_job_id IS NOT NULL;
+CREATE INDEX idx_task_instance_target_asset ON task_instance(target_asset_key) WHERE target_asset_key IS NOT NULL;
 
 -- ============================================================================
 -- 8. TRIGGER_HISTORY - Audit of why instances were created/released
@@ -191,6 +189,7 @@ CREATE TABLE IF NOT EXISTS trigger_history (
     task_instance_id BIGINT,
     decision VARCHAR(50) NOT NULL,
     decision_reason TEXT,
+    evaluation_payload_json JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (workflow_instance_id) REFERENCES workflow_instance(id) ON DELETE CASCADE,
     FOREIGN KEY (task_instance_id) REFERENCES task_instance(id) ON DELETE CASCADE
@@ -201,31 +200,7 @@ CREATE INDEX idx_trigger_history_asset_key ON trigger_history(asset_key);
 CREATE INDEX idx_trigger_history_workflow_instance ON trigger_history(workflow_instance_id);
 
 -- ============================================================================
--- 9. EXECUTOR_JOB - External job tracking (Spark, Flink, Shell, HTTP, etc.)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS executor_job (
-    id BIGSERIAL PRIMARY KEY,
-    external_job_id VARCHAR(255) NOT NULL UNIQUE,
-    task_instance_id BIGINT NOT NULL,
-    executor_type VARCHAR(50) NOT NULL,
-    job_status VARCHAR(50) NOT NULL DEFAULT 'SUBMITTED',
-    submit_time TIMESTAMP NOT NULL,
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
-    job_url TEXT,
-    error_message TEXT,
-    output_json JSONB,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (task_instance_id) REFERENCES task_instance(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_executor_job_external_job_id ON executor_job(external_job_id);
-CREATE INDEX idx_executor_job_task_instance ON executor_job(task_instance_id);
-CREATE INDEX idx_executor_job_status ON executor_job(job_status, updated_at DESC);
-
--- ============================================================================
--- 10. SCHEDULER_LEASE - Distributed coordination for multi-node schedulers
+-- 9. SCHEDULER_LEASE - Distributed coordination for multi-node schedulers
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS scheduler_lease (
     id BIGSERIAL PRIMARY KEY,
@@ -241,24 +216,22 @@ CREATE INDEX idx_scheduler_lease_lease_name ON scheduler_lease(lease_name);
 CREATE INDEX idx_scheduler_lease_expire_at ON scheduler_lease(expire_at DESC);
 
 -- ============================================================================
--- 11. EVENT_CONSUMER_OFFSET - Track event ingestion progress per source
+-- 10. EVENT_CONSUMER_OFFSET - Track event ingestion progress per source
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS event_consumer_offset (
     id BIGSERIAL PRIMARY KEY,
     source_type VARCHAR(50) NOT NULL,
     source_name VARCHAR(255) NOT NULL,
-    consumer_group VARCHAR(255),
-    last_processed_offset VARCHAR(255),
-    last_processed_time TIMESTAMP,
+    offset_value VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(source_type, source_name, consumer_group)
+    UNIQUE(source_type, source_name)
 );
 
 CREATE INDEX idx_event_consumer_offset_source ON event_consumer_offset(source_type, source_name);
 
 -- ============================================================================
--- 12. BACKFILL_SPEC - Configuration for backfill operations
+-- 11. BACKFILL_SPEC - Configuration for backfill operations
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS backfill_spec (
     id BIGSERIAL PRIMARY KEY,
@@ -291,10 +264,9 @@ CREATE INDEX idx_backfill_spec_workflow ON backfill_spec(workflow_code, workflow
 -- asset_dependency: Workflow/task dependencies
 -- workflow_definition: Reusable workflow DAGs (versioned)
 -- task_definition: Task definitions within workflows
--- workflow_instance: Workflow execution instances
--- task_instance: Task execution instances
+-- workflow_instance: Workflow scheduling instances
+-- task_instance: Task scheduling instances
 -- trigger_history: Audit trail of trigger decisions
--- executor_job: External job tracking
 -- scheduler_lease: Distributed coordination
 -- event_consumer_offset: Event ingestion offsets
 -- backfill_spec: Backfill operation specifications

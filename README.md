@@ -1,421 +1,253 @@
-# Lakehouse Flow：事件驱动的数据资产调度系统
+# Lakehouse Flow
 
-![Status](https://img.shields.io/badge/status-Phase%201-blue)
-![License](https://img.shields.io/badge/license-Apache%202.0-green)
-![Language](https://img.shields.io/badge/language-Java%2017-brightgreen)
-![Architecture](https://img.shields.io/badge/architecture-scheduling%20layer-success)
+Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
-**Lakehouse Flow** 是一个独立的、生产就绪的**纯调度决策系统**，专为现代 CDC 湖仓架构设计。
+当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。真实环境整体 E2E、Iceberg/Hudi 适配器、具体 MQ 产品绑定和 UI 仍是后续工作。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。
 
-它将调度范式从基于时间的 cron 触发升级为**数据资产状态驱动**，实现真正的数据就绪调度：
+## 一句话边界
 
-```
-输入: Paimon/Iceberg/Hudi snapshot 事件
-处理: 资产状态 → 依赖评估 → 实例创建
-输出: READY 任务实例（通过 REST API）
-     ↓
-下游系统（资源分配、DAG编排、真实执行）
+Lakehouse Flow 当前应该回答：
+
+```text
+某个湖仓资产的 snapshot 是否已经推进到目标版本？
+资产状态是否满足 snapshot/watermark/quality/schema 条件？
+这些判断能否被审计和幂等记录？
 ```
 
-**系统只负责回答**：数据资产是否就绪？依赖是否满足？应该创建哪个任务？
-**系统不负责**：资源检查、DAG编排、真实任务执行。那些都交给下游系统。
+它当前不应该声称已经负责：
 
-## 核心理念
-
-```
-传统数仓调度：
-  cron(0 2 * * *) → SQL 任务 → 报表
-  └─ 问题：数据延迟 ≠ 预计执行时刻
-
-现代湖仓调度（Lakehouse Flow）：
-  Paimon Snapshot v1000 → 资产就绪 → 依赖满足 → TaskInstance.READY
-  ↓
-  下游系统接收 → 资源检查 → DAG编排 → 真实执行 → 报表
-  └─ 解决：数据就绪驱动，消除时间与可用性错配
+```text
+真正执行任务、跟踪任务运行状态、资源调度、执行器回调、生产级队列消费。
 ```
 
-**关键区别**：
-- ✅ Lakehouse Flow = **调度决策**（何时运行，为什么运行）
-- ✅ 下游系统 = **执行编排**（如何分配资源、如何编排依赖、如何执行）
+## 当前实现状态
 
-## 关键特性
+| 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| Maven 多模块骨架 | 已实现 | Java 17，Spring Boot 3.2，多模块工程 |
+| PostgreSQL schema | 已实现 | Flyway SQL 使用 PostgreSQL JSONB；当前不支持 MySQL |
+| LakehouseEvent | 已实现 | 原始湖仓事件，按 `event_id` 去重 |
+| AssetState | 已实现 | snapshot 状态单调推进；单个表 snapshot 同时投影表级和 `changedPartitions` 分区级状态 |
+| Lakehouse snapshot source SPI | 已实现基础版 | source/provider/identity/offset ordering 均与湖格式解耦；同一摄取循环可挂载 Paimon、Iceberg、Hudi 等适配器 |
+| Paimon snapshot source | 实现待 E2E | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导 `changedPartitions`；真实 catalog 环境尚待整体 E2E 验证 |
+| EventIngestionService | 基础版 | 动态扫描全部已配置 source；事件、表/分区状态、来源路由、FlowPlan 决策和格式独立 offset 在同一事务提交 |
+| 条件与触发评估 | 基础版 | `FlowPlanConditionService` 支持 AND/OR 分组；`FlowPlanEvaluationService` 从已发布版本生成完整 DAG 调度意图 |
+| DependencyEvaluationService | 兼容层 | 保留旧 `AssetDependency` 单依赖路径，不再作为推荐的自然触发入口 |
+| SnapshotProgressService | 基础版 | 捕获目标资产 publication baseline；资产级 latest 推进不再直接确认共享写入结果 |
+| SnapshotEvidenceService | 基础版 | 在 baseline 后的事件序列中按 intent 属性、格式适配器给出的 `dataChange` 和目标分区匹配 snapshot |
+| SnapshotTriggerRoutingService | 基础版 | 补数/恢复/重跑 snapshot 只推进所属实例，不进入全局自然触发；非法和维护 snapshot 失败关闭 |
+| SnapshotConfirmationScanner | 基础版 | 周期扫描 `SCHEDULED` 任务，只用可归属的目标 snapshot 证据确认结果 |
+| TriggerHistory | 基础版 | 支持结构化 JSONB 审计 payload |
+| FlowPlan/Node | 基础版 | 支持版本化 DAG、发布前图校验、输入依赖和日期模板化目标资产 |
+| SchedulingAction | 基础版 | 支持 workflow 重跑、task instance 重跑、published FlowPlan node 重跑、统一批次化的完整 Flow/Node 子图补数、全范围或单失败节点级联恢复、安全整日跳过、补数批次暂停/恢复交付/取消、取消、跳过和 snapshot 重检 |
+| REST API | 基础版 | 暴露 FlowPlan/Node、action command/query、instance evidence、已发布 scheduling intent 审计和 backfill query/control API；不存在供下游抢任务的 ready/claim/deliver API |
+| SchedulingIntent Delivery | 基础版 | Lakehouse Flow 内部扫描 READY 决策，冻结 baseline，并按单一选定路由写入版本化完整指令；数据库立即可见，HTTP 由 Java 17 client 主动调用，MQ 通过 broker-neutral gateway 发布，外部投递支持租约、fencing、退避和死信审计 |
+| Target-Date Admission | 基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化发布槽位；冲突任务保持 READY，snapshot 确认或确认超时后释放 |
+| 补偿/运维视图 | 基础版 | 已有 snapshot 确认扫描、补数批次查询，以及按 Flow/版本/节点筛选和按 action key 展开的 snapshot 证据联查；UI 仍未实现 |
+| 执行器 | 不属于职责 | 本项目只做调度，不提交、运行或跟踪外部任务 |
 
-- **资产状态驱动调度**：用数据资产版本状态替代 cron 表达式
-- **幂等触发保障**：同一快照组合只能触发一次，通过唯一约束实现
-- **乱序和重复处理**：乐观锁防止并发覆盖，唯一约束自动去重
-- **完整审计日志**：记录为什么创建了某个实例（TriggerHistory）
-- **多表依赖组合**：支持 AND/OR 复杂条件评估
-- **端到端可观测**：调度决策过程完全可追踪
-- **开放集成**：通过 REST API 与任何下游系统集成
-- **生产就绪架构**：支持 Paimon/Iceberg/Hudi，易于扩展
+## 核心流程
 
-## 适用场景
+```text
+LakehouseSnapshotScanner
+  -> LakehouseSnapshotSourceProvider[*]
+     -> PaimonSnapshotSource / future IcebergSnapshotSource / HudiSnapshotSource
+  -> EventIngestionService
+  -> SnapshotIngestionTransactionService
+  -> lakehouse_event + table/partition asset_state
+  -> SnapshotTriggerRoutingService
+     -> action-owned: owning intent only
+     -> natural: FlowPlanEvaluationService
+  -> event_consumer_offset
+  -> WorkflowInstance + TaskInstance + TriggerHistory
+  -> internal SchedulingIntentOutboxScanner
+  -> scheduling_target_admission(targetAssetKey + bizDate)
+  -> scheduling_intent + scheduling_intent_delivery
+  -> SchedulingIntentDeliveryScanner (HTTP/MQ claim + push + retry)
+  -> downstream polls table / receives HTTP call / consumes MQ
+  -> downstream final snapshot carries required intent properties
+  -> SnapshotConfirmationScanner / SnapshotEvidenceService
+  -> DagProgressionService
+  -> next READY_TO_SCHEDULE intent
+```
 
-✅ **适合使用 Lakehouse Flow：**
-- 数据仓库构建在 Paimon/Iceberg/Hudi 等湖仓格式上
-- 完整链路处理（ODS → DWD → DWS → ADS）
-- 希望用数据资产就绪驱动调度，而不是时间触发
-- 需要消除预计执行时间与实际数据可用性的错配
-- 有专门的下游执行系统或能够集成 REST API
+关键约束：
 
-❌ **不适合：**
-- 传统无版本快照的 OLTP 数据库
-- 纯时间表达式的定时任务
-- 仅有数据着陆层，缺少数据加工链路的架构
-- 需要完全的资源管理和执行引擎在同一个系统中
+- 事件是证据，`asset_state` 才是调度判断的事实来源。
+- snapshot ID 字段以字符串存储，但比较时数字 ID 使用数字顺序，避免 `"99" > "100"` 这类字典序误判。
+- 摄入 offset 只推进到连续成功处理的 snapshot；中间 snapshot 失败时停止推进，下一轮重试。
+- 调度结果只由受管目标资产中可归属于本次 intent 的 snapshot 推进确认，不读取、不接收也不依赖下游任务结果回调。
+- `SchedulingIntent` 是 Lakehouse Flow 主动发布的不可变指令；baseline 在首次发布前冻结，完整 `instructionPayload` 对数据库、HTTP 和 MQ 保持一致。
+- 正常、补数、恢复和重跑首次发布前共享目标日期准入槽；互斥只控制 Lakehouse Flow 的意图发布，不声称锁住或停止下游执行。
+- 发布版本策略会决定节点确认窗口、目标日期租约和版本活跃 workflow 上限；达到并发上限的任务保持 READY，不产生 intent，也不提前冻结 baseline。
+- 下游必须把 `requiredSnapshotProperties` 原样写入最终数据 snapshot；湖格式适配器把原生 operation 映射为格式无关的 `dataChange`，维护 snapshot 只推进资产状态，不确认 task。
+- 补数、恢复和重跑 snapshot 会更新真实资产事实并确认所属 intent，但不会额外创建正常 `SNAPSHOT_DRIVEN` workflow；正常 intent 的最终 snapshot 和外部数据提交仍可驱动自然调度。
+- `changedPartitions` 会形成独立分区状态，历史分区补数不会推进当前日期的分区资产键。
+- 传输 ACK 只作为投递证据，不能放行 DAG 或确认任务结果。完整协议见 [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md)。
+- `PENDING/PUBLISHING/RETRY_WAIT/PUBLISHED/EXHAUSTED` 只属于 delivery；其中 `EXHAUSTED` 是传输死信，不会写成 task 执行失败，也不会替代 snapshot 结果。
+- 补数只允许显式 `startNode` 绕过其 DAG 上游；级联下游必须等同一业务日期内所有直接父节点的目标 snapshot 已确认推进。
+- 级联范围遇到缺失父节点的汇聚节点时直接拒绝，不能把缺依赖的下游意图提前交付。
+- 补数暂停/取消只阻断尚未交付的调度意图；已交付意图不会被伪装成已撤回。
+- 补数失败恢复保留原批次证据，从最早 snapshot 未推进日期创建单一替代批次；默认 `FULL_SCOPE` 重建原范围，显式 `FAILED_NODE_CASCADE` 只允许从唯一失败节点开始并选择依赖闭合的可达下游。多失败节点或缺父 join 会拒绝并要求全范围恢复。
+- Node 补数默认不会跳过历史日期；显式启用安全跳过后，也只有全部选中节点都存在同版本、同日期、同节点和同目标资产的 snapshot 确认证据时才省略整个日期。历史证据不参与新实例 DAG 放行。
+- 完整 Flow 与 Node 子图补数共享 `BackfillBatch` 生命周期；完整 Flow 以全部根节点作为日期入口，Node 子图仅以用户选中节点作为入口，批次会冻结入口节点和选中节点集合供查询与恢复。
+- 触发审计 payload 必须是合法 JSONB，而不是 Java 对象的 `toString()`。
 
-## 快速开始
+## 本地运行
 
-### 系统要求
+### 前置要求
 
 - Java 17+
-- MySQL 5.7+ 或 PostgreSQL 10+
-- Maven 3.8+
+- `./mvnw`（会下载 Maven 3.9.9，并读取 `.mavenrc` 使用 JDK 17）
+- Docker / Docker Compose
+- PostgreSQL 15 或兼容版本
 
-### 3分钟快速体验
-
-#### 1. 启动应用
+### 启动数据库
 
 ```bash
-git clone https://github.com/your-org/lakehouse-flow.git
-cd lakehouse-flow
-
-mvn clean package
-java -jar lakehouse-flow-service/target/lakehouse-flow-*.jar
+docker compose up -d postgres
 ```
 
-#### 2. 注册一个 Paimon 资产
+连接信息：
+
+```text
+url      jdbc:postgresql://localhost:5432/lakehouse_flow
+user     postgres
+password postgres
+```
+
+### 构建与测试
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/assets \
-  -H "Content-Type: application/json" \
+./mvnw clean test
+```
+
+当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于后续 Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、调度决策、意图交付、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
+
+Lakehouse Flow 内部扫描 READY 决策并写入 `scheduling_intent`。每条 intent 选择一个路由：`DATABASE_TABLE` 供下游轮询专用表，`HTTP` 由内部 publisher 主动 POST，`MQ` 由内部 publisher 调用部署提供的 `SchedulingIntentMessageGateway`。下游始终被动接收，不调用 Lakehouse Flow 抢占任务。REST 接口仅供审计：
+
+下游消费 `instruction_payload_json`，并按 [Scheduling Intent 下游契约](./SCHEDULING_INTENT_CONTRACT.md) 将其中的 `requiredSnapshotProperties` 写入最终目标 snapshot。
+
+```bash
+curl 'http://localhost:8080/api/v1/scheduling-intents/tasks/42'
+```
+
+启用 Paimon source 时配置原生 catalog options 和受管表；每张表拥有独立 offset。默认关闭，避免未配置 catalog 时启动扫描：
+
+```yaml
+lakehouse-flow:
+  snapshot-sources:
+    paimon:
+      enabled: true
+      zone-id: Asia/Shanghai
+      catalogs:
+        - name: paimon-prod
+          options:
+            warehouse: s3://warehouse/paimon
+            metastore: hive
+          tables:
+            - database: ods
+              table: orders
+              batch-size: 100
+              startup-mode: LATEST
+```
+
+`options` 原样交给 Paimon Catalog；对象存储和 metastore 的认证材料应由运行环境提供，不写入仓库配置。
+
+选择 HTTP 投递时配置 endpoint；选择 MQ 时配置 topic，并由部署模块提供具体 broker gateway：
+
+```yaml
+lakehouse-flow:
+  scheduling-intent-delivery:
+    channel: HTTP
+    destination: https://scheduler-consumer.example/api/intents
+    publisher:
+      claim-lease: PT30S
+      max-attempts: 8
+      initial-backoff: PT1S
+      maximum-backoff: PT5M
+```
+
+HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接受。publisher 采用至少一次投递，`intentKey` 是下游启动幂等键。超过 `publicationAdmission.leaseExpiresAt` 的意图不再向外发布并进入传输死信，但 task 的最终判断仍只取决于是否出现可归属的目标 snapshot。
+
+投递与 snapshot source 可观测性通过 Actuator 暴露：
+
+```bash
+curl http://localhost:8080/actuator/prometheus
+curl 'http://localhost:8080/api/v1/scheduling-intent-deliveries/dead-letters?channel=MQ&limit=100'
+```
+
+核心指标包括 `lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempt_duration_seconds`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
+
+source reconciliation 周期性核对湖表 earliest/latest、durable offset、最新持久化事件和表级 `AssetState`。`UNINITIALIZED` / `LAGGING` 通过正常连续摄入补偿；已有事件对应的 `AssetState` 缺失或漂移时重放该事件投影；`RETENTION_GAP`、`OFFSET_AHEAD`、durable offset 缺少事件等情况进入 `BLOCKED` 并告警，不允许自动跨越历史或构造 snapshot。
+
+`startup-mode` 默认 `LATEST`，首次接入只摄入最新 snapshot 并建立一次当前事实；`EARLIEST` 会显式回放仍被保留的历史 snapshot，可能触发历史业务日期，只用于明确的数据恢复场景。常规历史补数应使用 `BackfillBatch`，不要依赖 source 回放。
+
+Paimon source 读取 snapshot properties，但普通 Paimon SQL/`BatchTableCommit` 不会自动写入 Lakehouse Flow 的单次意图属性。下游必须安装 writer-side adapter/connector 扩展，把 `requiredSnapshotProperties` 注入最终 commit；上线前用探针提交验证属性可回读。只配置 source 而没有写入扩展时，外部 snapshot 仍可驱动资产状态，Lakehouse Flow 下发的 intent 则不会被误判为成功。
+
+Action 审计查询示例：
+
+```bash
+curl 'http://localhost:8080/api/v1/scheduling-actions?workflowCode=flow.orders&limit=50'
+curl 'http://localhost:8080/api/v1/scheduling-actions/backfill-node-20260910'
+```
+
+列表接口只返回 action 摘要；按 key 的详情接口会联查相关 `BackfillBatch`、有序 `BackfillItem` 和 task target snapshot 证据。响应中的 `action.status` 只表示调度命令是否应用，`snapshotAdvanced` 才表示目标资产是否相对 publication baseline 推进。
+
+失败节点级联恢复示例：
+
+```bash
+curl -X POST 'http://localhost:8080/api/v1/scheduling-actions/recover-backfill' \
+  -H 'Content-Type: application/json' \
   -d '{
-    "assetKey": "paimon://ods_db/ods_order_latest",
-    "storageFormat": "PAIMON",
-    "catalogName": "ods_db",
-    "databaseName": "ods_db",
-    "tableName": "ods_order_latest",
-    "description": "订单最新状态表"
+    "backfillBatchId": 81,
+    "recoveryStrategy": "FAILED_NODE_CASCADE",
+    "actionKey": "recover-backfill-81-attempt-1",
+    "requestedBy": "operator-a",
+    "reason": "retry the single snapshot-failed branch"
   }'
 ```
 
-#### 3. 为任务声明资产依赖
+省略 `recoveryStrategy` 时兼容使用 `FULL_SCOPE`。补数专题的功能与质量退出标准见 `PHASE2_PROGRESS.md`。
+
+### 启动应用
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/asset-dependencies \
-  -H "Content-Type: application/json" \
-  -d '{
-    "workflowCode": 12345,
-    "taskCode": 100,
-    "assetKey": "paimon://ods_db/ods_order_latest",
-    "dependencyGroup": "order_ready",
-    "condition": {
-      "snapshotRequired": true,
-      "qualityStatus": "PASSED"
-    }
-  }'
+cd lakehouse-flow-boot
+../mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-#### 4. 观察依赖被触发
+或者从根目录打包后运行：
 
 ```bash
-# 查看资产当前状态
-curl http://localhost:8080/api/v1/assets/paimon://ods_db/ods_order_latest/state
-
-# 查看触发历史
-curl http://localhost:8080/api/v1/triggers/history?assetKey=paimon://ods_db/ods_order_latest
+./mvnw clean package -DskipTests
+java -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
 ```
 
-## 核心概念
-
-详细定义见 [GLOSSARY.md](./GLOSSARY.md)。这里快速说明最重要的5个概念：
-
-### 1. LakehouseEvent（湖仓事件）
-
-原始事件，来自 Paimon snapshot、Iceberg manifest 或外部 push。事件仅作为"证据"记录，不直接触发工作流。
-
-```
-eventId:      paimon_ods_order_latest_snapshot_1001_xxx
-assetKey:     paimon://ods_db/ods_order_latest
-snapshotId:   1001
-watermark:    2024-09-11T23:59:59Z
-qualityStatus: PASSED
-```
-
-### 2. AssetState（资产状态）
-
-**调度决策的唯一事实来源**。由事件不断推进，但从不回退。采用乐观锁防止乱序覆盖。
-
-```
-assetKey:              paimon://ods_db/ods_order_latest
-latestSnapshotId:      1001  (单调递增)
-latestWatermark:       2024-09-11T23:59:59Z
-qualityStatus:         PASSED
-version:               42    (乐观锁版本号)
-```
-
-### 3. AssetDependency（资产依赖）
-
-工作流或任务声明它等待哪些数据资产的哪些条件。
-
-```json
-{
-  "workflowCode": 12345,
-  "assetKey": "paimon://ods_db/ods_order_latest",
-  "dependencyGroup": "order_ready",
-  "condition": {
-    "snapshotRequired": true,
-    "qualityStatus": "PASSED"
-  }
-}
-```
-
-### 4. TriggerHistory（触发历史）
-
-每次触发都生成唯一的触发记录，保证**幂等性**。同一 `trigger_key` 最多成功创建一次。
-
-```
-trigger_key: workflow_12345_group_order_ready_snapshot_1001_xxx
-status:      SUCCESS
-reason:      Asset snapshot ready, quality PASSED, dependency satisfied
-```
-
-### 5. WorkflowInstance & TaskInstance
-
-标准的工作流 DAG 实例和任务实例，新增"由资产驱动"而非仅"由前置任务"驱动。
-
-## 系统架构
-
-```
-┌──────────────────────────────┐
-│   Paimon/Iceberg/Hudi 表     │
-├──────────────────────────────┤
-        ↓ snapshot event
-┌──────────────────────────────┐
-│  事件摄入循环                  │
-│  (轮询扫描 + 去重)             │
-├──────────────────────────────┤
-        ↓ LakehouseEvent
-┌──────────────────────────────┐
-│  资产状态循环                  │
-│  (乐观锁更新 + 乱序保护)       │
-├──────────────────────────────┤
-        ↓ AssetState changed
-┌──────────────────────────────┐
-│  依赖评估循环                  │
-│  (条件匹配 + 触发决策)        │
-├──────────────────────────────┤
-        ↓ trigger_key
-┌──────────────────────────────┐
-│  幂等触发                      │
-│  (唯一约束防止重复)            │
-├──────────────────────────────┤
-        ↓ WorkflowInstance
-┌──────────────────────────────┐
-│  DAG 执行 + 任务派发           │
-│  (标准调度和状态机)            │
-├──────────────────────────────┤
-        ↓
-┌──────────────────────────────┐
-│  补偿扫描循环                  │
-│  (漏采集 + 失败重试)           │
-└──────────────────────────────┘
-```
-
-详见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
-
-## 设计原则
-
-Lakehouse Flow 遵循**七大不可退让的原则**。详见 [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md)。
-
-1. **资产状态驱动**：不能"事件到了就触发"，必须"资产状态达到条件才触发"
-2. **幂等触发**：同一版本、同一依赖组合只能触发一次
-3. **事件视为证据**：事件可能重复/乱序/延迟/丢失，资产状态才是事实来源
-4. **乐观锁保护**：乱序或并发事件通过版本号防止覆盖，单调递增
-5. **唯一触发键**：通过数据库唯一约束保证幂等，无需分布式锁
-6. **可解释的等待**：用户随时可查询"为什么任务还在等待"
-7. **完整补偿**：遗漏的事件、失败的触发都有定期补偿机制
-
-## 关键循环
-
-Lakehouse Flow 的核心是6个独立的调度循环，每个循环有明确的职责：
-
-### 事件摄入循环
-轮询或接收湖仓事件，去重后落库。
-
-### 资产状态循环
-消费未处理事件，以乐观锁更新资产状态。
-
-### 依赖评估循环
-当资产状态变化时，反向查询所有依赖项，重新评估。
-
-### 幂等触发循环
-计算 trigger_key，通过唯一约束确保同一组合只触发一次。
-
-### 任务派发循环
-释放 READY 任务给执行器（Shell/SQL/HTTP）。
-
-### 补偿循环
-定期检查漏采集事件、失败触发、卡顿任务。
-
-详见 [ARCHITECTURE.md#关键循环](./ARCHITECTURE.md)。
-
-## MVP 第一阶段范围
-
-### ✅ 已实现
-
-- Paimon snapshot 事件摄入与去重
-- 资产状态单调更新 + 乐观锁
-- 单资产依赖条件评估（snapshot 存在性）
-- 幂等触发历史记录
-- 工作流实例创建和任务派发
-- Shell/SQL 执行器适配
-- 状态协调和轮询
-- 补偿扫描器
-
-### 🚧 后续阶段（Phase 2+）
-
-- 多资产 AND/OR 依赖组合
-- Watermark/Quality/Schema 条件支持
-- HTTP/Webhook 事件 push 接口
-- 工作流级资产直接触发
-- Iceberg 和 Hudi 事件源
-- Spark/Flink 执行器
-- 可视化 UI 和资产大盘
-
-## 文档导航
-
-| 文档 | 内容 |
-|------|------|
-| **[README.md](./README.md)** | 项目概览、快速开始、核心概念 |
-| **[ARCHITECTURE.md](./ARCHITECTURE.md)** | 系统架构、数据模型、表结构、6个关键循环 |
-| **[DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md)** | 7大不可退让原则、约束、为什么这样设计 |
-| **[DEVELOPMENT.md](./DEVELOPMENT.md)** | 开发环境、代码规范、本地运行、测试 |
-| **[GLOSSARY.md](./GLOSSARY.md)** | 术语表、完整的数据模型定义 |
-
-## API 参考
-
-```
-POST   /api/v1/assets                          注册资产
-GET    /api/v1/assets                          查询资产列表
-GET    /api/v1/assets/{assetKey}/state         查询资产当前状态
-GET    /api/v1/assets/{assetKey}/events        查询资产事件历史
-
-POST   /api/v1/asset-events                    外部系统上报事件 (push)
-GET    /api/v1/asset-events                    查询事件历史
-
-POST   /api/v1/asset-dependencies              声明资产依赖
-GET    /api/v1/workflows/{workflowCode}/dependencies/evaluate   评估依赖
-
-GET    /api/v1/workflows/{workflowCode}/instances               查询工作流实例
-GET    /api/v1/tasks/{taskId}/waiting-reason                   查询任务等待原因
-GET    /api/v1/triggers/history                                查询触发历史
-```
-
-详见 [docs/API.md](./docs/API.md)。
-
-## 监控与告警
-
-### 关键指标
-
-```
-lakehouse_asset_event_received_total
-  - 收到的事件总数
-
-lakehouse_asset_state_updated_total
-  - 资产状态被推进的次数
-
-lakehouse_asset_state_lag_seconds
-  - 资产最新快照的年龄
-
-lakehouse_asset_dependency_ready_total
-  - 依赖就绪的次数
-
-lakehouse_asset_trigger_success_total
-  - 触发成功的工作流数
-
-lakehouse_asset_trigger_failed_total
-  - 触发失败的工作流数
-```
-
-### 告警阈值
-
-| 告警 | 阈值 | 优先级 |
-|------|------|--------|
-| 资产状态延迟 | > 1 小时 | P2 |
-| 触发失败 | > 3 次/5 分钟 | P1 |
-| 补偿扫描失败 | 连续 > 3 次 | P1 |
-| 依赖卡顿 | quality 失败 > 30 分钟 | P2 |
-
-详见 [ARCHITECTURE.md#观测性设计](./ARCHITECTURE.md)。
-
-## 常见问题
-
-### Q: Lakehouse Flow 和 DolphinScheduler / Airflow 什么关系？
-
-**A**: 
-- **DolphinScheduler/Airflow**：通用调度系统，适合任意任务编排，基于时间和任务依赖
-- **Lakehouse Flow**：专用调度系统，针对 CDC 湖仓架构优化，基于数据资产状态
-
-Lakehouse Flow 专注于"数据就绪了吗"这一问题，不处理一般的任务依赖和时间调度。
-
-### Q: 如果资产事件丢失了会怎样？
-
-**A**: 不会永久卡住。有两层防护：
-1. 每个任务都有超时时间，超时后进入 ERROR 状态并告警
-2. 补偿扫描器每 5~15 分钟运行，对比 Paimon 实际快照和 AssetState，发现漏采集会补写事件
-
-### Q: 支持哪些湖仓表格式？
-
-**A**: MVP 阶段支持 **Paimon**。后续计划扩展 Iceberg 和 Hudi。所有源适配器实现相同的 `AssetEventSource` 接口。
-
-### Q: 多 Master 并发时会重复触发吗？
-
-**A**: 不会。每个触发都有唯一的 `trigger_key`，通过数据库唯一约束天然实现"只有一个赢家"，无需分布式锁。
-
-详见 [DESIGN_PRINCIPLES.md#幂等性](./DESIGN_PRINCIPLES.md)。
-
-## 性能与扩展
-
-- **事件摄入**：~1000 events/sec（取决于数据库 INSERT 吞吐）
-- **依赖评估**：~100 evaluations/sec（取决于条件复杂度）
-- **建议扩展**：通过 Kafka + 消费者组进行水平扩展
-
-详见 [DEVELOPMENT.md#性能测试](./DEVELOPMENT.md)。
-
-## 开发与贡献
-
-- [本地开发指南](./DEVELOPMENT.md)
-- [代码规范](./DEVELOPMENT.md)
-- [测试指南](./DEVELOPMENT.md)
-
-### 快速启动开发环境
+健康检查：
 
 ```bash
-# 创建开发数据库
-docker run -d --name mysql-dev \
-  -e MYSQL_ROOT_PASSWORD=password \
-  -e MYSQL_DATABASE=lakehouse_flow \
-  -p 3306:3306 \
-  mysql:8.0
-
-# 运行初始化脚本
-mysql -h 127.0.0.1 -u root -ppassword lakehouse_flow < db/schema.sql
-
-# 启动应用
-mvn spring-boot:run
+curl http://localhost:8080/actuator/health
 ```
 
-## 许可证
+## 模块说明
 
-Apache License 2.0
+| 模块 | 职责 |
+| --- | --- |
+| `lakehouse-flow-common` | 共享工具，例如 snapshot ID 比较 |
+| `lakehouse-flow-model` | JPA 实体和值对象 |
+| `lakehouse-flow-dao` | Spring Data Repository 与 Flyway schema migrations |
+| `lakehouse-flow-service` | 资产状态、事件、条件评估、snapshot 进展确认、实例、action 联查和触发审计服务 |
+| `lakehouse-flow-integration` | 格式无关 snapshot source SPI、通用摄取、source 对账补偿、指标与 Paimon Catalog 适配器 |
+| `lakehouse-flow-api` | FlowPlan/Node、action command/query、instance evidence、intent 和 delivery 死信只读审计 API |
+| `lakehouse-flow-scheduler` | 内部 intent 创建、HTTP/MQ 可靠投递、delivery 指标和 snapshot 确认扫描循环 |
+| `lakehouse-flow-test` | 后续系统级 E2E 的测试装配入口；覆盖完整应用链路，不限定为本模块局部测试 |
+| `lakehouse-flow-boot` | Spring Boot 启动模块和应用配置 |
 
-## 联系方式
+## 下一步建议
 
-- 项目主页：https://github.com/your-org/lakehouse-flow
-- Issue 跟踪：https://github.com/your-org/lakehouse-flow/issues
-- 讨论区：https://github.com/your-org/lakehouse-flow/discussions
-
----
-
-**最后更新**: 2026-09-11
+1. 继续收敛 Flow 级可信身份、授权和配额边界，不引入重型租户层。
+2. 为选定的实际 MQ 产品实现 `SchedulingIntentMessageGateway` 部署适配器。
+3. 在定义完整丢弃和优先级排队审计语义后，扩展 `SERIAL_DISCARD` / `SERIAL_PRIORITY`。
+4. Flow/Node 实例聚合、稳定游标和 Web 运维视图按当前决策后移。
+5. 整体 Testcontainers E2E 与 Iceberg/Hudi adapter 按当前阶段决策暂缓。

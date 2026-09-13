@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.model;
 
+import io.github.lakehouseflow.common.SchedulingStates;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -9,13 +10,14 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * One execution of a task.
+ * One scheduling decision for a task.
  *
  * State machine:
- * CREATED → WAITING_DEPENDENCY → READY → DISPATCHING → RUNNING → SUCCESS
- *                                                              ↘ FAILED
- *                                                              ↘ TIMEOUT
- * FAILED → RETRY_WAITING → READY (when retries remain)
+ * CREATED → WAITING_SNAPSHOT → READY_TO_SCHEDULE → SCHEDULED → SNAPSHOT_CONFIRMED
+ *                                                    ↘ SKIPPED   ↘ SNAPSHOT_NOT_ADVANCED
+ *
+ * These states describe scheduling/audit only. Execution, executor attempts,
+ * resource queues, retries, and runtime callbacks are outside Lakehouse Flow.
  *
  * Unique key: workflow_instance_id + task_code
  */
@@ -25,8 +27,10 @@ import java.time.LocalDateTime;
     indexes = {
         @Index(name = "idx_task_instance_key", columnList = "instance_key", unique = true),
         @Index(name = "idx_workflow_task", columnList = "workflow_instance_id,task_code"),
+        @Index(name = "idx_task_flow_plan_version", columnList = "flow_plan_version_id"),
+        @Index(name = "idx_task_schedule_node", columnList = "schedule_node_id"),
         @Index(name = "idx_task_state", columnList = "state,updated_at DESC"),
-        @Index(name = "idx_external_job", columnList = "external_job_id")
+        @Index(name = "idx_task_target_asset", columnList = "target_asset_key")
     }
 )
 @Data
@@ -40,8 +44,15 @@ public class TaskInstance {
     private Long id;
 
     /**
+     * Optimistic concurrency version for scheduler-side state transitions.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
+    /**
      * Unique instance key within workflow instance
-     * Format: workflow_instance_id:task_code:try_number
+     * Format: workflow_instance_id:task_code
      */
     @Column(name = "instance_key", nullable = false, unique = true, length = 255)
     private String instanceKey;
@@ -65,66 +76,65 @@ public class TaskInstance {
     private Integer taskVersion;
 
     /**
+     * FlowPlanVersion that produced this task scheduling instance.
+     */
+    @Column(name = "flow_plan_version_id")
+    private Long flowPlanVersionId;
+
+    /**
+     * ScheduleNode that produced this task scheduling instance.
+     */
+    @Column(name = "schedule_node_id")
+    private Long scheduleNodeId;
+
+    /**
      * Business date
      */
     @Column(name = "biz_date", nullable = false)
     private LocalDateTime bizDate;
 
     /**
-     * Task state: CREATED, WAITING_DEPENDENCY, READY, DISPATCHING, RUNNING, SUCCESS, FAILED, RETRY_WAITING, TIMEOUT, CANCELLED, SKIPPED
+     * Scheduling state. See {@link SchedulingStates}.
      */
     @Column(name = "state", nullable = false, length = 50)
     private String state;
 
     /**
-     * Reason why task is in WAITING_DEPENDENCY state
+     * Reason why task is waiting for snapshot evidence.
      * Example: "Waiting for: paimon.prod.orders.dt=2025-09-11 (no snapshot yet)"
      */
     @Column(name = "waiting_reason", columnDefinition = "text")
     private String waitingReason;
 
     /**
-     * Current attempt number (1-based)
+     * Target asset whose snapshot progress confirms the scheduling result.
      */
-    @Column(name = "try_number", nullable = false)
-    private Integer tryNumber;
+    @Column(name = "target_asset_key", length = 255)
+    private String targetAssetKey;
 
     /**
-     * Maximum retries allowed
+     * Target snapshot observed before Lakehouse Flow emitted the scheduling decision.
      */
-    @Column(name = "max_retries", nullable = false)
-    private Integer maxRetries;
+    @Column(name = "baseline_snapshot_id", length = 255)
+    private String baselineSnapshotId;
 
     /**
-     * Executor type: SHELL, HTTP, SQL, SPARK, FLINK, etc.
+     * Snapshot observed when Lakehouse Flow checked the target asset.
      */
-    @Column(name = "executor_type", length = 50)
-    private String executorType;
+    @Column(name = "observed_snapshot_id", length = 255)
+    private String observedSnapshotId;
 
     /**
-     * External job ID (from executor system)
-     * Example: Spark application ID, K8s job name, etc.
+     * When Lakehouse Flow emitted the scheduling decision.
      */
-    @Column(name = "external_job_id", length = 255)
-    private String externalJobId;
+    @Column(name = "scheduled_at")
+    private LocalDateTime scheduledAt;
 
     /**
-     * When task was submitted to executor
+     * When target snapshot evidence was last checked.
      */
-    @Column(name = "submit_time")
-    private LocalDateTime submitTime;
-
-    /**
-     * When task started executing
-     */
-    @Column(name = "start_time")
-    private LocalDateTime startTime;
-
-    /**
-     * When task finished
-     */
-    @Column(name = "end_time")
-    private LocalDateTime endTime;
+    @Column(name = "last_snapshot_check_at")
+    private LocalDateTime lastSnapshotCheckAt;
 
     /**
      * Record creation time
@@ -138,15 +148,19 @@ public class TaskInstance {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * Initialize audit fields and the default scheduling state before insert.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
         if (updatedAt == null) updatedAt = LocalDateTime.now();
-        if (state == null) state = "CREATED";
-        if (tryNumber == null) tryNumber = 1;
-        if (maxRetries == null) maxRetries = 3;
+        if (state == null) state = SchedulingStates.CREATED;
     }
 
+    /**
+     * Refresh the update timestamp before changing scheduling evidence.
+     */
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();

@@ -5,8 +5,8 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.hibernate.annotations.JdbcType;
-import org.hibernate.type.descriptor.jdbc.JsonJdbcType;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -72,7 +72,7 @@ public class AssetDependency {
      * }
      */
     @Column(name = "dependency_conditions", nullable = false, columnDefinition = "jsonb")
-    @JdbcType(JsonJdbcType.class)
+    @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> dependencyConditions;
 
     /**
@@ -100,6 +100,9 @@ public class AssetDependency {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * Initialize audit fields and defaults before inserting the dependency.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
@@ -108,6 +111,9 @@ public class AssetDependency {
         if (version == null) version = 1L;
     }
 
+    /**
+     * Refresh the update timestamp before changing the dependency.
+     */
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();

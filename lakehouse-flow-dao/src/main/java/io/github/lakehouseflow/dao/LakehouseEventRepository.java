@@ -19,38 +19,63 @@ public interface LakehouseEventRepository extends JpaRepository<LakehouseEvent, 
     Optional<LakehouseEvent> findByEventId(String eventId);
 
     /**
-     * Find all events for an asset within a snapshot range
+     * Find the durable snapshot-event sequence for one physical table.
+     *
+     * Intent attribution scans the sequence after its own baseline so a later
+     * unrelated snapshot cannot hide an earlier matching commit.
      */
     @Query("SELECT e FROM LakehouseEvent e " +
            "WHERE e.catalogName = :catalogName " +
            "AND e.databaseName = :databaseName " +
            "AND e.tableName = :tableName " +
-           "AND (e.partitionName = :partitionName OR :partitionName IS NULL) " +
-           "AND e.snapshotId >= :minSnapshotId " +
-           "ORDER BY e.snapshotId ASC")
-    List<LakehouseEvent> findEventsByAssetAndSnapshotRange(
+           "AND e.observedAt >= :observedAfter " +
+           "ORDER BY e.observedAt ASC, e.id ASC")
+    List<LakehouseEvent> findSnapshotEvidenceCandidates(
             @Param("catalogName") String catalogName,
             @Param("databaseName") String databaseName,
             @Param("tableName") String tableName,
-            @Param("partitionName") String partitionName,
-            @Param("minSnapshotId") String minSnapshotId
-    );
+            @Param("observedAfter") LocalDateTime observedAfter);
 
     /**
-     * Find latest events for an asset
+     * Find the most recently observed event for an asset.
+     *
+     * <p>Snapshot coordinates are stored as strings, so database lexical ordering would put
+     * decimal coordinate {@code 99} after {@code 100}. Ingestion observation order is the durable
+     * cross-format event order.
      */
     @Query("SELECT e FROM LakehouseEvent e " +
            "WHERE e.catalogName = :catalogName " +
            "AND e.databaseName = :databaseName " +
            "AND e.tableName = :tableName " +
            "AND (e.partitionName = :partitionName OR :partitionName IS NULL) " +
-           "ORDER BY e.snapshotId DESC LIMIT 1")
+           "ORDER BY e.observedAt DESC, e.id DESC LIMIT 1")
     Optional<LakehouseEvent> findLatestEventByAsset(
             @Param("catalogName") String catalogName,
             @Param("databaseName") String databaseName,
             @Param("tableName") String tableName,
             @Param("partitionName") String partitionName
     );
+
+    /**
+     * Find the latest durable source event for one configured physical table.
+     *
+     * @param sourceType lakehouse format or source type
+     * @param catalogName logical catalog name
+     * @param databaseName logical database or schema name
+     * @param tableName logical table name
+     * @return latest matching event by ingestion order
+     */
+    @Query("SELECT e FROM LakehouseEvent e " +
+           "WHERE e.sourceType = :sourceType " +
+           "AND e.catalogName = :catalogName " +
+           "AND e.databaseName = :databaseName " +
+           "AND e.tableName = :tableName " +
+           "ORDER BY e.observedAt DESC, e.id DESC LIMIT 1")
+    Optional<LakehouseEvent> findLatestSourceEvent(
+            @Param("sourceType") String sourceType,
+            @Param("catalogName") String catalogName,
+            @Param("databaseName") String databaseName,
+            @Param("tableName") String tableName);
 
     /**
      * Find events since a specific time for a source

@@ -85,6 +85,9 @@ public class EventConsumerOffset {
         }
     }
 
+    /**
+     * Refresh the update timestamp before offset changes.
+     */
     @PreUpdate
     public void preUpdate() {
         updatedAt = LocalDateTime.now();

@@ -103,6 +103,9 @@ public class EvaluationResult {
                 .build();
     }
 
+    /**
+     * Render a compact condition-evaluation summary for logs and debugging.
+     */
     @Override
     public String toString() {
         return "EvaluationResult{" +

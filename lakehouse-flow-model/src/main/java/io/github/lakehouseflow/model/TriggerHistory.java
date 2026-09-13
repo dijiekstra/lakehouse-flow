@@ -2,9 +2,11 @@ package io.github.lakehouseflow.model;
 
 import jakarta.persistence.*;
 import lombok.*;
-import org.hibernate.type.descriptor.jdbc.JsonJdbcType;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * Trigger History - Audit log for workflow and task instance creation.
@@ -109,7 +111,8 @@ public class TriggerHistory {
      * Can contain condition evaluation details, snapshots, watermarks, etc.
      */
     @Column(name = "evaluation_payload_json", columnDefinition = "JSONB")
-    private String evaluationPayloadJson;
+    @JdbcTypeCode(SqlTypes.JSON)
+    private Map<String, Object> evaluationPayloadJson;
 
     /**
      * Timestamp when this trigger record was created.
@@ -117,6 +120,9 @@ public class TriggerHistory {
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    /**
+     * Initialize the trigger audit timestamp before insert.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) {
@@ -124,6 +130,9 @@ public class TriggerHistory {
         }
     }
 
+    /**
+     * Render a compact audit summary without dumping JSON payload content.
+     */
     @Override
     public String toString() {
         return "TriggerHistory{" +

@@ -1,5 +1,7 @@
 # Lakehouse Flow - 实现指南和讨论总结
 
+> 历史文档：本文包含旧 workflow/task 状态判断和下游 READY 查询示例。当前实现由 Lakehouse Flow 内部发布 outbox，不接收下游结果，并只依据受管目标资产 snapshot 推进结果。
+
 **项目名称**: Lakehouse Flow  
 **项目描述**: CDC 湖仓场景下的 Snapshot 驱动调度系统  
 **实现语言**: Java 17 LTS  

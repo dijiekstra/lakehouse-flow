@@ -33,6 +33,43 @@ server:
   servlet:
     context-path: /
 
+lakehouse-flow:
+  snapshot-sources:
+    scanner:
+      enabled: true
+      fixed-delay-ms: 10000
+      initial-delay-ms: 5000
+    reconciliation:
+      enabled: true
+      fixed-delay-ms: 60000
+      initial-delay-ms: 15000
+    paimon:
+      enabled: false
+      zone-id: Asia/Shanghai
+      catalogs: []
+  scheduling-intent-outbox:
+    enabled: true
+    fixed-delay-ms: 1000
+    batch-size: 100
+  scheduling-intent-delivery:
+    # One immutable intent selects exactly one outbound route.
+    channel: ${LAKEHOUSE_FLOW_INTENT_CHANNEL:DATABASE_TABLE}
+    destination: ${LAKEHOUSE_FLOW_INTENT_DESTINATION:scheduling_intent}
+    publisher:
+      enabled: true
+      fixed-delay-ms: 1000
+      batch-size: 100
+      claim-lease: PT30S
+      max-attempts: 8
+      initial-backoff: PT1S
+      maximum-backoff: PT5M
+    metrics:
+      fixed-delay-ms: 10000
+  snapshot-confirmation:
+    enabled: true
+    fixed-delay-ms: 30000
+    timeout: PT1H
+
 management:
   endpoints:
     web:

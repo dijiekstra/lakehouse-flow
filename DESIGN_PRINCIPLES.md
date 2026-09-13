@@ -1,5 +1,7 @@
 # 设计原则与不可退让的约束
 
+> 历史文档：原则背景仍可参考，但 callback、executor 状态查询等旧示例已失效。冲突时以 `ARCHITECTURE.md` 和 `SCHEDULING_MODEL_DESIGN.md` 为准。
+
 ## 简介
 
 Lakehouse Flow 不是通用调度系统的增强版，而是为 CDC 湖仓架构重新设计的调度系统。本文阐述为什么选择这些设计，以及在实现中**必须遵守**的七大原则。
@@ -333,7 +335,7 @@ GET /api/v1/tasks/{taskId}/waiting-reason
 **不问"现在几点了"，问"数据就绪了吗"**
 
 ```
-Paimon snapshot 版本推进 → 被感知为 LakehouseEvent
+Paimon / Iceberg / Hudi 等湖表 snapshot 版本推进 → 由对应 source adapter 统一为 LakehouseEvent
   → 立即更新 AssetState（基于乐观锁和单调性）
   → 评估所有依赖该资产的工作流/任务
   → 条件满足就立即触发（秒级响应）
@@ -444,4 +446,3 @@ Lakehouse Flow 通过 HTTP/Webhook 触发 DolphinScheduler 的工作流
 - ✅ 性能足以应对生产规模
 - ✅ 问题可排查，等待原因清楚
 - ✅ 自动补偿，没有永久的卡顿
-

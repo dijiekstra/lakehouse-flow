@@ -42,20 +42,30 @@ public class EventService {
             event.setObservedAt(LocalDateTime.now());
         }
 
+        Optional<LakehouseEvent> existing = eventRepository.findByEventId(event.getEventId());
+        if (existing.isPresent()) {
+            log.debug("Event {} already exists, projecting existing event into asset state", event.getEventId());
+            assetStateService.projectAssetStatesFromEvent(existing.get());
+            return existing.get();
+        }
+
         // Try to persist
         try {
             log.info("Ingesting event {} from {}", event.getEventId(), event.getSourceType());
             LakehouseEvent saved = eventRepository.save(event);
 
             // Update asset state based on this new event
-            assetStateService.updateAssetStateFromEvent(saved);
+            assetStateService.projectAssetStatesFromEvent(saved);
 
             return saved;
         } catch (DataIntegrityViolationException e) {
             // Event already exists, this is normal (deduplication)
             log.debug("Event {} already exists, skipping", event.getEventId());
-            Optional<LakehouseEvent> existing = eventRepository.findByEventId(event.getEventId());
-            return existing.orElseThrow(() -> new RuntimeException("Event should exist but not found"));
+            Optional<LakehouseEvent> concurrentExisting = eventRepository.findByEventId(event.getEventId());
+            LakehouseEvent saved = concurrentExisting
+                    .orElseThrow(() -> new RuntimeException("Event should exist but not found"));
+            assetStateService.projectAssetStatesFromEvent(saved);
+            return saved;
         }
     }
 

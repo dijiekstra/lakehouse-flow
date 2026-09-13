@@ -1,208 +1,256 @@
 package io.github.lakehouseflow.integration.event;
 
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
-import io.github.lakehouseflow.dao.LakehouseEventRepository;
-import io.github.lakehouseflow.integration.paimon.PaimonSnapshot;
-import io.github.lakehouseflow.integration.paimon.PaimonSnapshotSource;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshot;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotEventMapper;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSource;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSourceProvider;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSourceRegistry;
+import io.github.lakehouseflow.integration.source.LakehouseSourceIdentity;
+import io.github.lakehouseflow.model.EventConsumerOffset;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.DisplayName;
-import org.mockito.InjectMocks;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.time.LocalDateTime;
-import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
- * EventIngestionService Tests
- *
- * Tests:
- * 1. Ingest new snapshots from Paimon
- * 2. Skip duplicate events (same event_id)
- * 3. Update consumer offset after successful ingestion
- * 4. Handle empty snapshots gracefully
+ * Tests format-neutral source discovery and ordered transactional ingestion.
  */
-@DisplayName("Event Ingestion Service Tests")
+@ExtendWith(MockitoExtension.class)
 class EventIngestionServiceTest {
 
-    @Mock
-    private PaimonSnapshotSource paimonSnapshotSource;
+    private static final LakehouseSourceIdentity IDENTITY = new LakehouseSourceIdentity(
+            "ICEBERG", "catalog.db.orders", "catalog", "db", "orders");
+    private static final Comparator<String> NUMERIC_OFFSET_COMPARATOR =
+            Comparator.comparingLong(Long::parseLong);
 
     @Mock
-    private LakehouseEventRepository lakehouseEventRepository;
+    private LakehouseSnapshotSourceProvider sourceProvider;
+
+    @Mock
+    private LakehouseSnapshotSource source;
 
     @Mock
     private EventConsumerOffsetRepository eventConsumerOffsetRepository;
 
-    @InjectMocks
-    private EventIngestionService eventIngestionService;
+    @Mock
+    private LakehouseSnapshotEventMapper eventMapper;
 
+    @Mock
+    private SnapshotIngestionTransactionService transactionService;
+
+    @Mock
+    private SnapshotSourceMetrics snapshotSourceMetrics;
+
+    private EventIngestionService ingestionService;
+
+    /**
+     * Create the service with one mockable format provider.
+     */
     @BeforeEach
     void setUp() {
-        MockitoAnnotations.openMocks(this);
+        ingestionService = new EventIngestionService(
+                new LakehouseSnapshotSourceRegistry(List.of(sourceProvider)),
+                eventConsumerOffsetRepository,
+                eventMapper,
+                transactionService,
+                snapshotSourceMetrics);
     }
 
+    /**
+     * Verify all configured format sources are discovered and ingested.
+     */
     @Test
-    @DisplayName("Should ingest new snapshots from Paimon")
-    void testIngestNewSnapshots() {
-        // Arrange
-        List<PaimonSnapshot> snapshots = new ArrayList<>();
-        snapshots.add(PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build());
+    void ingestAllSourcesDiscoversProviderSources() {
+        stubIdentity();
+        when(sourceProvider.sources()).thenReturn(List.of(source));
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.empty());
+        when(source.scanAfter(null)).thenReturn(List.of());
 
-        when(paimonSnapshotSource.getCatalogName()).thenReturn("paimon_catalog");
-        when(paimonSnapshotSource.getDatabaseName()).thenReturn("ods");
-        when(paimonSnapshotSource.getTableName()).thenReturn("orders");
-        when(paimonSnapshotSource.scanSnapshots(null)).thenReturn(snapshots);
+        assertEquals(0, ingestionService.ingestAllSources());
 
-        LakehouseEvent expectedEvent = snapshots.get(0).toLakehouseEvent("paimon_catalog", "ods", "orders");
-        when(paimonSnapshotSource.mapToLakehouseEvent(snapshots.get(0))).thenReturn(expectedEvent);
-
-        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName("PAIMON", "paimon_catalog.ods.orders"))
-                .thenReturn(Optional.empty());
-
-        when(lakehouseEventRepository.save(any(LakehouseEvent.class))).thenReturn(expectedEvent);
-
-        // Act
-        int count = eventIngestionService.ingestFromPaimon();
-
-        // Assert
-        assertEquals(1, count);
-        verify(lakehouseEventRepository, times(1)).save(any(LakehouseEvent.class));
-        verify(eventConsumerOffsetRepository, times(2)).findBySourceTypeAndSourceName(anyString(), anyString());
+        verify(source).scanAfter(null);
+        verify(snapshotSourceMetrics).recordScan(
+                org.mockito.ArgumentMatchers.eq(IDENTITY),
+                org.mockito.ArgumentMatchers.eq("success"),
+                org.mockito.ArgumentMatchers.eq(0),
+                any(java.time.Duration.class));
     }
 
+    /**
+     * Verify source offsets are sorted with the adapter's own comparator.
+     */
     @Test
-    @DisplayName("Should skip duplicate events gracefully")
-    void testSkipDuplicateEvents() {
-        // Arrange
-        List<PaimonSnapshot> snapshots = new ArrayList<>();
-        snapshots.add(PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build());
+    void ingestSourceProcessesSnapshotsInFormatOrder() {
+        stubIdentity();
+        when(source.offsetComparator()).thenReturn(NUMERIC_OFFSET_COMPARATOR);
+        LakehouseSnapshot newer = snapshot("11");
+        LakehouseSnapshot older = snapshot("2");
+        LakehouseEvent olderEvent = event("2");
+        LakehouseEvent newerEvent = event("11");
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.empty());
+        when(source.scanAfter(null)).thenReturn(List.of(newer, older));
+        when(eventMapper.map(IDENTITY, older)).thenReturn(olderEvent);
+        when(eventMapper.map(IDENTITY, newer)).thenReturn(newerEvent);
+        when(transactionService.processSnapshot(
+                "catalog.db.orders", "2", NUMERIC_OFFSET_COMPARATOR, olderEvent))
+                .thenReturn(result(true, olderEvent, "2"));
+        when(transactionService.processSnapshot(
+                "catalog.db.orders", "11", NUMERIC_OFFSET_COMPARATOR, newerEvent))
+                .thenReturn(result(false, newerEvent, "11"));
 
-        when(paimonSnapshotSource.getCatalogName()).thenReturn("paimon_catalog");
-        when(paimonSnapshotSource.getDatabaseName()).thenReturn("ods");
-        when(paimonSnapshotSource.getTableName()).thenReturn("orders");
-        when(paimonSnapshotSource.scanSnapshots(null)).thenReturn(snapshots);
+        assertEquals(1, ingestionService.ingestSource(source));
 
-        LakehouseEvent expectedEvent = snapshots.get(0).toLakehouseEvent("paimon_catalog", "ods", "orders");
-        when(paimonSnapshotSource.mapToLakehouseEvent(snapshots.get(0))).thenReturn(expectedEvent);
-
-        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName("PAIMON", "paimon_catalog.ods.orders"))
-                .thenReturn(Optional.empty());
-
-        // Simulate duplicate event (unique constraint violation)
-        when(lakehouseEventRepository.save(any(LakehouseEvent.class)))
-                .thenThrow(new DataIntegrityViolationException("Duplicate event_id"));
-
-        // Act
-        int count = eventIngestionService.ingestFromPaimon();
-
-        // Assert
-        assertEquals(0, count);  // No new events ingested
-        verify(lakehouseEventRepository, times(1)).save(any(LakehouseEvent.class));
+        InOrder order = inOrder(transactionService);
+        order.verify(transactionService).processSnapshot(
+                "catalog.db.orders", "2", NUMERIC_OFFSET_COMPARATOR, olderEvent);
+        order.verify(transactionService).processSnapshot(
+                "catalog.db.orders", "11", NUMERIC_OFFSET_COMPARATOR, newerEvent);
     }
 
+    /**
+     * Verify the durable offset is passed to the format adapter as an opaque value.
+     */
     @Test
-    @DisplayName("Should return 0 when no new snapshots")
-    void testNoNewSnapshots() {
-        // Arrange
-        when(paimonSnapshotSource.getCatalogName()).thenReturn("paimon_catalog");
-        when(paimonSnapshotSource.getDatabaseName()).thenReturn("ods");
-        when(paimonSnapshotSource.getTableName()).thenReturn("orders");
-        when(paimonSnapshotSource.scanSnapshots(null)).thenReturn(new ArrayList<>());
+    void ingestSourceResumesFromDurableOffset() {
+        stubIdentity();
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("instant-42").build();
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.of(offset));
+        when(source.scanAfter("instant-42")).thenReturn(List.of());
 
-        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName("PAIMON", "paimon_catalog.ods.orders"))
-                .thenReturn(Optional.empty());
+        assertEquals(0, ingestionService.ingestSource(source));
 
-        // Act
-        int count = eventIngestionService.ingestFromPaimon();
-
-        // Assert
-        assertEquals(0, count);
-        verify(lakehouseEventRepository, never()).save(any());
-        verify(eventConsumerOffsetRepository, times(1)).findBySourceTypeAndSourceName(anyString(), anyString());
+        verify(source).scanAfter("instant-42");
     }
 
+    /**
+     * Verify later snapshots wait when projection of an earlier snapshot fails.
+     */
     @Test
-    @DisplayName("Should continue processing after single failure")
-    void testContinueProcessingAfterFailure() {
-        // Arrange
-        List<PaimonSnapshot> snapshots = new ArrayList<>();
-        snapshots.add(PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build());
-        snapshots.add(PaimonSnapshot.builder()
-                .snapshotId("1001")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_def")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T12:00:00")
-                .deltaRecordCount(2000L)
-                .changelogRecordCount(800L)
-                .build());
+    void ingestSourceStopsAtFirstProjectionFailure() {
+        stubIdentity();
+        when(source.offsetComparator()).thenReturn(NUMERIC_OFFSET_COMPARATOR);
+        LakehouseSnapshot first = snapshot("1");
+        LakehouseSnapshot second = snapshot("2");
+        LakehouseEvent firstEvent = event("1");
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.empty());
+        when(source.scanAfter(null)).thenReturn(List.of(first, second));
+        when(eventMapper.map(IDENTITY, first)).thenReturn(firstEvent);
+        when(transactionService.processSnapshot(
+                "catalog.db.orders", "1", NUMERIC_OFFSET_COMPARATOR, firstEvent))
+                .thenThrow(new IllegalStateException("projection failed"));
 
-        when(paimonSnapshotSource.getCatalogName()).thenReturn("paimon_catalog");
-        when(paimonSnapshotSource.getDatabaseName()).thenReturn("ods");
-        when(paimonSnapshotSource.getTableName()).thenReturn("orders");
-        when(paimonSnapshotSource.scanSnapshots(null)).thenReturn(snapshots);
+        assertEquals(0, ingestionService.ingestSource(source));
 
-        LakehouseEvent event1 = snapshots.get(0).toLakehouseEvent("paimon_catalog", "ods", "orders");
-        LakehouseEvent event2 = snapshots.get(1).toLakehouseEvent("paimon_catalog", "ods", "orders");
+        verify(eventMapper, never()).map(IDENTITY, second);
+    }
 
-        when(paimonSnapshotSource.mapToLakehouseEvent(snapshots.get(0))).thenReturn(event1);
-        when(paimonSnapshotSource.mapToLakehouseEvent(snapshots.get(1))).thenReturn(event2);
+    /**
+     * Verify duplicate source identities fail before they can race on one offset row.
+     */
+    @Test
+    void ingestAllSourcesRejectsDuplicateSourceIdentity() {
+        LakehouseSnapshotSource duplicate = org.mockito.Mockito.mock(LakehouseSnapshotSource.class);
+        when(sourceProvider.sources()).thenReturn(List.of(source, duplicate));
+        when(source.identity()).thenReturn(IDENTITY);
+        when(duplicate.identity()).thenReturn(IDENTITY);
 
-        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName("PAIMON", "paimon_catalog.ods.orders"))
-                .thenReturn(Optional.empty());
+        assertThrows(IllegalStateException.class, ingestionService::ingestAllSources);
 
-        // First snapshot fails, second succeeds
-        when(lakehouseEventRepository.save(event1)).thenThrow(new RuntimeException("Some error"));
-        when(lakehouseEventRepository.save(event2)).thenReturn(event2);
+        verify(source, never()).scanAfter(any());
+    }
 
-        // Act
-        int count = eventIngestionService.ingestFromPaimon();
+    /**
+     * Verify two lake adapters cannot project into the same logical asset key.
+     */
+    @Test
+    void ingestAllSourcesRejectsDuplicateAssetIdentityAcrossFormats() {
+        LakehouseSnapshotSource hudiSource = org.mockito.Mockito.mock(LakehouseSnapshotSource.class);
+        LakehouseSourceIdentity hudiIdentity = new LakehouseSourceIdentity(
+                "HUDI", "hudi-catalog.db.orders", "catalog", "db", "orders");
+        when(sourceProvider.sources()).thenReturn(List.of(source, hudiSource));
+        when(source.identity()).thenReturn(IDENTITY);
+        when(hudiSource.identity()).thenReturn(hudiIdentity);
 
-        // Assert
-        assertEquals(1, count);  // Only second snapshot ingested
-        verify(lakehouseEventRepository, times(2)).save(any(LakehouseEvent.class));
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                ingestionService::ingestAllSources);
+
+        assertEquals("Duplicate lakehouse asset identity: catalog.db.orders", error.getMessage());
+        verify(source, never()).scanAfter(any());
+    }
+
+    /**
+     * Verify one unavailable table does not block independent lakehouse sources.
+     */
+    @Test
+    void ingestAllSourcesIsolatesSourceScanFailures() {
+        LakehouseSnapshotSource hudiSource = org.mockito.Mockito.mock(LakehouseSnapshotSource.class);
+        LakehouseSourceIdentity hudiIdentity = new LakehouseSourceIdentity(
+                "HUDI", "catalog.db.payments", "catalog", "db", "payments");
+        when(sourceProvider.sources()).thenReturn(List.of(source, hudiSource));
+        when(source.identity()).thenReturn(IDENTITY);
+        when(hudiSource.identity()).thenReturn(hudiIdentity);
+        when(source.offsetComparator()).thenReturn(NUMERIC_OFFSET_COMPARATOR);
+        when(hudiSource.offsetComparator()).thenReturn(Comparator.naturalOrder());
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.empty());
+        when(eventConsumerOffsetRepository.findBySourceTypeAndSourceName(
+                "HUDI", "catalog.db.payments")).thenReturn(Optional.empty());
+        when(source.scanAfter(null)).thenThrow(new IllegalStateException("catalog unavailable"));
+        when(hudiSource.scanAfter(null)).thenReturn(List.of());
+
+        assertEquals(0, ingestionService.ingestAllSources());
+
+        verify(hudiSource).scanAfter(null);
+        verify(snapshotSourceMetrics).recordScan(
+                org.mockito.ArgumentMatchers.eq(IDENTITY),
+                org.mockito.ArgumentMatchers.eq("failure"),
+                org.mockito.ArgumentMatchers.eq(0),
+                any(java.time.Duration.class));
+    }
+
+    private void stubIdentity() {
+        when(source.identity()).thenReturn(IDENTITY);
+    }
+
+    private LakehouseSnapshot snapshot(String offset) {
+        return new LakehouseSnapshot(
+                offset, offset, "1", null, "APPEND", true, null, null, null, null);
+    }
+
+    private LakehouseEvent event(String snapshotId) {
+        return LakehouseEvent.builder()
+                .eventId("event-" + snapshotId)
+                .sourceType("ICEBERG")
+                .snapshotId(snapshotId)
+                .build();
+    }
+
+    private SnapshotIngestionTransactionService.SnapshotIngestionResult result(
+            boolean inserted,
+            LakehouseEvent event,
+            String offset) {
+        return new SnapshotIngestionTransactionService.SnapshotIngestionResult(
+                inserted, event.getEventId(), offset);
     }
 }

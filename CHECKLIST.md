@@ -1,5 +1,7 @@
 # Lakehouse Flow - 项目交付检查清单
 
+> 历史文档：包含已废弃的 executor 工作项。当前差距和验收状态只以 `PHASE2_PROGRESS.md` 为准。
+
 ## 📋 已完成 (Completed)
 
 ### 第一阶段：项目初始化与文档体系建设
@@ -287,4 +289,3 @@ curl http://localhost:8080/swagger-ui.html  # 可访问
 - Week 6: API 和文档完成
 
 **总体目标**：6 周内交付 MVP 版本，支持 Paimon snapshot 驱动的完整调度闭环
-

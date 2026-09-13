@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.service;
 
+import io.github.lakehouseflow.common.SnapshotIds;
 import io.github.lakehouseflow.dao.AssetStateRepository;
 import io.github.lakehouseflow.model.AssetState;
 import io.github.lakehouseflow.model.EvaluationResult;
@@ -16,7 +17,7 @@ import java.util.Optional;
  *
  * Supported condition types:
  * - SNAPSHOT_EXISTS: Asset has any snapshot
- * - SNAPSHOT_ID_GTE: Latest snapshot ID >= required value (lexicographic comparison)
+ * - SNAPSHOT_ID_GTE: Latest snapshot ID >= required value
  * - WATERMARK_GTE: Latest watermark >= required time
  * - QUALITY_PASSED: Quality status is PASSED
  * - SCHEMA_COMPATIBLE: Schema status is COMPATIBLE
@@ -87,7 +88,7 @@ public class ConditionEvaluator {
     }
 
     /**
-     * Check if latest snapshot ID >= required value (lexicographic comparison).
+     * Check if latest snapshot ID >= required value.
      * E.g., snapshot "1000" >= "950" → true
      */
     private EvaluationResult checkSnapshotIdGte(String assetKey, String requiredValue) {
@@ -101,10 +102,7 @@ public class ConditionEvaluator {
 
         String currentSnapshotId = state.get().getLatestSnapshotId();
 
-        // Lexicographic comparison (as strings)
-        // Note: For numeric snapshot IDs like "100", "1000", this works correctly
-        // For alphanumeric, lexicographic ordering applies
-        if (currentSnapshotId.compareTo(requiredValue) >= 0) {
+        if (SnapshotIds.isGreaterThanOrEqual(currentSnapshotId, requiredValue)) {
             return EvaluationResult.builder()
                     .satisfied(true)
                     .description("Snapshot " + currentSnapshotId + " >= required " + requiredValue)

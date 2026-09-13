@@ -133,6 +133,9 @@ public class AssetState {
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    /**
+     * Initialize asset-state defaults and audit timestamps before insert.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
@@ -144,6 +147,9 @@ public class AssetState {
         if (version == null) version = 1L;
     }
 
+    /**
+     * Refresh the update timestamp before changing asset-state evidence.
+     */
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();

@@ -1,202 +1,81 @@
 package io.github.lakehouseflow.integration.paimon;
 
-import io.github.lakehouseflow.model.LakehouseEvent;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshot;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.DisplayName;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * PaimonSnapshot Tests
- *
- * Tests:
- * 1. Convert PaimonSnapshot to LakehouseEvent
- * 2. Generate deterministic event ID
- * 3. Handle timestamp conversion correctly
- * 4. Handle watermark string conversion to LocalDateTime
+ * Tests conversion of native Paimon metadata to the common snapshot contract.
  */
-@DisplayName("Paimon Snapshot Tests")
 class PaimonSnapshotTest {
 
+    /**
+     * Verify snapshot properties and changed partitions survive conversion as attribution evidence.
+     */
     @Test
-    @DisplayName("Should convert snapshot to LakehouseEvent")
-    void testToLakehouseEvent() {
-        // Arrange
-        long currentTimeMillis = System.currentTimeMillis();
-        PaimonSnapshot snapshot = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc123")
-                .commitKind("APPEND")
-                .commitTime(currentTimeMillis)
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
+    void toLakehouseSnapshotPreservesPaimonEvidence() {
+        long commitMillis = Instant.parse("2026-09-13T04:00:00Z").toEpochMilli();
+        PaimonSnapshot paimon = new PaimonSnapshot(
+                42L,
+                7L,
+                "writer-1",
+                99L,
+                "APPEND",
+                commitMillis,
+                commitMillis,
+                1_000L,
+                50L,
+                20L,
+                Map.of("lakehouse-flow.intent-key", "task-instance:12"),
+                List.of("dt=2026-09-13"));
 
-        // Act
-        LakehouseEvent event = snapshot.toLakehouseEvent("paimon_catalog", "ods", "orders");
+        LakehouseSnapshot snapshot = paimon.toLakehouseSnapshot(ZoneId.of("Asia/Shanghai"));
 
-        // Assert
-        assertEquals("PAIMON:paimon_catalog:ods:orders:1000", event.getEventId());
-        assertEquals("SNAPSHOT_COMMITTED", event.getEventType());
-        assertEquals("PAIMON", event.getSourceType());
-        assertEquals("paimon_catalog", event.getCatalogName());
-        assertEquals("ods", event.getDatabaseName());
-        assertEquals("orders", event.getTableName());
-        assertEquals("1000", event.getSnapshotId());
-        assertEquals("100", event.getSchemaId());
-        assertEquals("APPEND", event.getCommitKind());
-        assertNotNull(event.getCommitTime());
-        assertNotNull(event.getWatermark());
+        assertEquals("42", snapshot.sourceOffset());
+        assertEquals("42", snapshot.snapshotId());
+        assertEquals("7", snapshot.schemaId());
+        assertEquals(12, snapshot.commitTime().getHour());
+        assertEquals(Map.of("lakehouse-flow.intent-key", "task-instance:12"),
+                snapshot.snapshotProperties());
+        assertEquals(List.of("dt=2026-09-13"), snapshot.changedPartitions());
+        assertEquals("42", snapshot.payload().get("nativeSnapshotId"));
     }
 
+    /**
+     * Verify Paimon's no-watermark sentinel is represented as missing evidence.
+     */
     @Test
-    @DisplayName("Should generate deterministic event ID")
-    void testDeterministicEventId() {
-        // Arrange
-        PaimonSnapshot snapshot1 = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
+    void toLakehouseSnapshotTreatsMinimumWatermarkAsAbsent() {
+        PaimonSnapshot paimon = new PaimonSnapshot(
+                1L, 1L, "writer", 1L, "APPEND", 0L, Long.MIN_VALUE,
+                null, null, null, null, null);
 
-        PaimonSnapshot snapshot2 = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("different_user")
-                .commitIdentifier("different_commit")
-                .commitKind("APPEND")
-                .commitTime(123456789L)
-                .watermark("2026-09-12T10:00:00")
-                .deltaRecordCount(2000L)
-                .changelogRecordCount(800L)
-                .build();
+        LakehouseSnapshot snapshot = paimon.toLakehouseSnapshot(ZoneId.of("UTC"));
 
-        // Act
-        String eventId1 = snapshot1.toLakehouseEvent("paimon_catalog", "ods", "orders").getEventId();
-        String eventId2 = snapshot2.toLakehouseEvent("paimon_catalog", "ods", "orders").getEventId();
-
-        // Assert
-        // Same snapshot ID should produce same event ID regardless of other fields
-        assertEquals(eventId1, eventId2);
-        assertEquals("PAIMON:paimon_catalog:ods:orders:1000", eventId1);
+        assertNull(snapshot.watermark());
+        assertEquals(Map.of(), snapshot.snapshotProperties());
+        assertEquals(List.of(), snapshot.changedPartitions());
     }
 
+    /**
+     * Verify Paimon maintenance snapshots cannot masquerade as business-data progress.
+     */
     @Test
-    @DisplayName("Should handle null watermark")
-    void testNullWatermark() {
-        // Arrange
-        PaimonSnapshot snapshot = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark(null)  // No watermark
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
+    void toLakehouseSnapshotClassifiesCompactionAsMaintenance() {
+        PaimonSnapshot paimon = new PaimonSnapshot(
+                2L, 1L, "writer", 2L, "COMPACT", 1L, null,
+                null, null, null, Map.of(), List.of("dt=2026-09-13"));
 
-        // Act
-        LakehouseEvent event = snapshot.toLakehouseEvent("paimon_catalog", "ods", "orders");
+        LakehouseSnapshot snapshot = paimon.toLakehouseSnapshot(ZoneId.of("UTC"));
 
-        // Assert
-        assertNull(event.getWatermark());
-        assertEquals("PAIMON:paimon_catalog:ods:orders:1000", event.getEventId());
-    }
-
-    @Test
-    @DisplayName("Should handle invalid watermark format gracefully")
-    void testInvalidWatermarkFormat() {
-        // Arrange
-        PaimonSnapshot snapshot = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("invalid-watermark-format")  // Invalid format
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
-
-        // Act
-        LakehouseEvent event = snapshot.toLakehouseEvent("paimon_catalog", "ods", "orders");
-
-        // Assert
-        // Should not throw, watermark should be null
-        assertNull(event.getWatermark());
-        assertEquals("PAIMON:paimon_catalog:ods:orders:1000", event.getEventId());
-    }
-
-    @Test
-    @DisplayName("Should convert commitTime correctly")
-    void testCommitTimeConversion() {
-        // Arrange
-        long currentTimeMillis = System.currentTimeMillis();
-        PaimonSnapshot snapshot = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc")
-                .commitKind("APPEND")
-                .commitTime(currentTimeMillis)
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
-
-        // Act
-        LakehouseEvent event = snapshot.toLakehouseEvent("paimon_catalog", "ods", "orders");
-
-        // Assert
-        assertNotNull(event.getCommitTime());
-        assertTrue(event.getCommitTime() instanceof LocalDateTime);
-    }
-
-    @Test
-    @DisplayName("Should include payload metadata")
-    void testPayloadMetadata() {
-        // Arrange
-        PaimonSnapshot snapshot = PaimonSnapshot.builder()
-                .snapshotId("1000")
-                .schemaId("100")
-                .commitUser("airflow")
-                .commitIdentifier("commit_abc123")
-                .commitKind("APPEND")
-                .commitTime(System.currentTimeMillis())
-                .watermark("2026-09-11T10:00:00")
-                .deltaRecordCount(1000L)
-                .changelogRecordCount(500L)
-                .build();
-
-        // Act
-        LakehouseEvent event = snapshot.toLakehouseEvent("paimon_catalog", "ods", "orders");
-
-        // Assert
-        assertNotNull(event.getPayloadJson());
-        assertTrue(event.getPayloadJson().containsKey("snapshotId"));
-        assertTrue(event.getPayloadJson().containsKey("schemaId"));
-        assertTrue(event.getPayloadJson().containsKey("commitUser"));
-        assertTrue(event.getPayloadJson().containsKey("commitIdentifier"));
-        assertTrue(event.getPayloadJson().containsKey("commitKind"));
-        assertTrue(event.getPayloadJson().containsKey("watermark"));
-        assertTrue(event.getPayloadJson().containsKey("deltaRecordCount"));
-        assertTrue(event.getPayloadJson().containsKey("changelogRecordCount"));
-
-        assertEquals("1000", event.getPayloadJson().get("snapshotId"));
-        assertEquals("airflow", event.getPayloadJson().get("commitUser"));
+        assertEquals(false, snapshot.dataChange());
+        assertEquals("COMPACT", snapshot.commitKind());
     }
 }

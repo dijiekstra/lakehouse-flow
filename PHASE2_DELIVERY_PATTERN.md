@@ -1,5 +1,7 @@
 # Phase 2 设计更新 - 任务交付方式澄清
 
+> 历史文档：文中的下游轮询 Lakehouse Flow READY API 方案已废弃。当前由 Lakehouse Flow 内部写入数据库 outbox，后续通过内部 HTTP/MQ publisher 主动投递；下游结果不会回传并参与判断。
+
 **日期**: 2026-09-11 22:00  
 **更新**: 任务调度后的实现方式
 

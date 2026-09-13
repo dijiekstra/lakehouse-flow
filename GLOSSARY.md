@@ -1,5 +1,7 @@
 # 术语表与数据模型参考
 
+> 历史文档：其中 executor 及 `RUNNING/SUCCESS/FAILED` 术语已废弃。当前术语以 `SCHEDULING_MODEL_DESIGN.md` 和代码中的 `SchedulingStates` 为准。
+
 ## A
 
 ### Asset（数据资产）
@@ -446,4 +448,3 @@ DAG 拓扑的不可变定义。
 - **CDC**：Change Data Capture（变更数据捕获）
 - **DAG**：Directed Acyclic Graph（有向无环图）
 - **PK**：Primary Key（主键）
-

@@ -9,7 +9,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -25,6 +27,17 @@ import java.util.Optional;
 public class TriggerHistoryService {
 
     private final TriggerHistoryRepository triggerHistoryRepository;
+
+    /**
+     * Find an existing trigger decision by its idempotency key.
+     *
+     * @param triggerKey stable trigger key for one scheduling decision
+     * @return existing trigger history when this decision was already recorded
+     */
+    @Transactional(readOnly = true)
+    public Optional<TriggerHistory> findByTriggerKey(String triggerKey) {
+        return triggerHistoryRepository.findByTriggerKey(triggerKey);
+    }
 
     /**
      * Record a trigger event for workflow instance creation.
@@ -59,7 +72,7 @@ public class TriggerHistoryService {
                 .decision(evaluationResult.getSatisfied() ? "TRIGGERED" : "SKIPPED")
                 .decisionReason(evaluationResult.getWaitingReason() != null ? 
                     evaluationResult.getWaitingReason() : evaluationResult.getDescription())
-                .evaluationPayloadJson(evaluationResult.toString())
+                .evaluationPayloadJson(toEvaluationPayload(evaluationResult))
                 .createdAt(LocalDateTime.now())
                 .build();
 
@@ -100,7 +113,7 @@ public class TriggerHistoryService {
                 .decision(evaluationResult.getSatisfied() ? "TRIGGERED" : "SKIPPED")
                 .decisionReason(evaluationResult.getWaitingReason() != null ? 
                     evaluationResult.getWaitingReason() : evaluationResult.getDescription())
-                .evaluationPayloadJson(evaluationResult.toString())
+                .evaluationPayloadJson(toEvaluationPayload(evaluationResult))
                 .createdAt(LocalDateTime.now())
                 .build();
 
@@ -136,6 +149,25 @@ public class TriggerHistoryService {
 
         triggerHistoryRepository.save(history);
         log.debug("Recorded skipped trigger {} because {}", triggerKey, waitingReason);
+    }
+
+    /**
+     * Convert an evaluation result into a durable audit payload.
+     *
+     * @param evaluationResult dependency evaluation result
+     * @return JSONB-compatible payload map
+     */
+    private Map<String, Object> toEvaluationPayload(EvaluationResult evaluationResult) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("satisfied", evaluationResult.getSatisfied());
+        payload.put("waitingReason", evaluationResult.getWaitingReason());
+        payload.put("description", evaluationResult.getDescription());
+        payload.put("assetKey", evaluationResult.getAssetKey());
+        payload.put("snapshotId", evaluationResult.getSnapshotId());
+        payload.put("watermark", evaluationResult.getWatermark());
+        payload.put("eventId", evaluationResult.getEventId());
+        payload.put("evaluatedAt", evaluationResult.getEvaluatedAt());
+        return payload;
     }
 
     /**

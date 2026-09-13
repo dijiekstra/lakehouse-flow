@@ -1,5 +1,7 @@
 # Phase 1 MVP 实现计划
 
+> 历史文档：其中 task dispatch、executor 和运行状态设计已废弃，不属于当前 Lakehouse Flow 边界。
+
 ## 目标
 
 在 6 周内交付一个**可验证的端到端闭环**：

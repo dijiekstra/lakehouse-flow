@@ -38,6 +38,12 @@
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
+        <!-- Channel-neutral intent serialization -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- Micrometer -->
         <dependency>
             <groupId>io.micrometer</groupId>

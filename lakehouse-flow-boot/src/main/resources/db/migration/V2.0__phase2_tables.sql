@@ -38,14 +38,17 @@ CREATE TABLE IF NOT EXISTS event_consumer_offset (
     
     source_type VARCHAR(32) NOT NULL,  -- PAIMON, ICEBERG, HUDI
     source_name VARCHAR(255) NOT NULL,
-    
-    last_processed_snapshot_id VARCHAR(255),
-    last_processed_watermark TIMESTAMP,
+    offset_value VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     
     UNIQUE(source_type, source_name)
 );
+
+-- Align databases created from earlier skeleton migrations with the entity model.
+ALTER TABLE event_consumer_offset ADD COLUMN IF NOT EXISTS offset_value VARCHAR(255);
+ALTER TABLE event_consumer_offset ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 
 -- Add indexes to lakehouse_event table for Phase 2
 ALTER TABLE lakehouse_event ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP;
@@ -57,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_lakehouse_event_processed_at
 ALTER TABLE workflow_instance ADD COLUMN IF NOT EXISTS trigger_asset_key VARCHAR(255);
 ALTER TABLE workflow_instance ADD COLUMN IF NOT EXISTS trigger_event_id VARCHAR(255);
 ALTER TABLE workflow_instance ADD COLUMN IF NOT EXISTS trigger_snapshot_id VARCHAR(255);
+ALTER TABLE trigger_history ADD COLUMN IF NOT EXISTS evaluation_payload_json JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_workflow_instance_trigger_asset 
     ON workflow_instance(trigger_asset_key);

@@ -1,5 +1,7 @@
 # Lakehouse Flow - Phase 2 实现路线图
 
+> 历史文档：当前版本目标和差距以 `PHASE2_PROGRESS.md` 为准；文中的下游 READY API 和状态回传方案均已废弃，当前系统由内部 outbox 主动发布且不读取下游任务结果。
+
 **日期**: 2026-09-11  
 **状态**: Phase 2 开始准备  
 **架构**: 调度决策层 + 下游执行编排层  
@@ -254,9 +256,10 @@ ALTER TABLE workflow_instance ADD COLUMN trigger_event_id VARCHAR(255);
 - [ ] 集成测试
 
 ### Step 8: 端到端测试（0.5 天）
-- [ ] Event → State → Dependency → Task 完整链路
-- [ ] Mock Paimon 事件
-- [ ] 验证幂等性和状态转换
+- [ ] 以 Testcontainers PostgreSQL 启动完整 Lakehouse Flow 应用和 Flyway schema
+- [ ] 覆盖 Event/API → AssetState → FlowPlan 决策 → 内部 intent outbox 发布 → target snapshot 确认 → DAG/补数推进完整链路
+- [ ] 验证事务、唯一约束、并发 claim、幂等性和 snapshot 驱动状态转换
+- [ ] E2E 是跨模块的系统级验收；测试代码可由 `lakehouse-flow-test` 承载，但不作为该模块的局部测试
 
 ### Step 9: 文档和例子（0.5 天）
 - [ ] Phase 2 实现总结
@@ -273,7 +276,7 @@ ALTER TABLE workflow_instance ADD COLUMN trigger_event_id VARCHAR(255);
 - ✅ 能够评估依赖条件
 - ✅ 能够创建 WorkflowInstance 和 TaskInstance
 - ✅ 能够通过 API 查询 READY 的任务
-- ✅ 能够通过 callback 更新任务状态
+- ✅ 能够交付调度意图，并只通过目标资产 snapshot 推进确认调度结果
 
 ### 代码质量
 - ✅ 所有循环都是幂等的
@@ -349,4 +352,3 @@ ALTER TABLE workflow_instance ADD COLUMN trigger_event_id VARCHAR(255);
 - REST API 可供下游系统集成
 - 10+ 循环和集成测试
 - 完整文档
-

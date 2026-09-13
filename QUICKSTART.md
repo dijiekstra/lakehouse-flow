@@ -1,5 +1,7 @@
 # Lakehouse Flow - 快速启动指南
 
+> 历史文档：命令可供参考，但能力清单可能已过期；当前启动与测试方式以 `README.md` 和 `DEVELOPMENT.md` 为准。
+
 本指南介绍如何快速启动和验证 Lakehouse Flow 项目的骨架环境。
 
 ## 前置要求

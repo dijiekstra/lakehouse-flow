@@ -1,8 +1,9 @@
 spring:
   application:
     name: lakehouse-flow-test
-  # Disable JPA/Hibernate for tests (requires PostgreSQL JSONB support)
   jpa:
+    hibernate:
+      ddl-auto: create-drop
     open-in-view: false
   # Disable Flyway for tests
   flyway:
@@ -10,11 +11,26 @@ spring:
   # Use mock datasource that won't actually connect
   datasource:
     url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
     username: sa
     password:
 
 server:
   port: 8081
+
+lakehouse-flow:
+  snapshot-sources:
+    scanner:
+      enabled: false
+    reconciliation:
+      enabled: false
+  scheduling-intent-outbox:
+    enabled: false
+  scheduling-intent-delivery:
+    publisher:
+      enabled: false
+  snapshot-confirmation:
+    enabled: false
 
 logging:
   level:

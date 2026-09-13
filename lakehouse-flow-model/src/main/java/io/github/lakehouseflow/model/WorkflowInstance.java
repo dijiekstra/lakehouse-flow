@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.model;
 
+import io.github.lakehouseflow.common.SchedulingStates;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -9,13 +10,14 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * One execution of a workflow.
+ * One scheduling decision for a workflow.
  *
  * State machine:
- * CREATED → WAITING → RUNNING → SUCCESS
- *                  ↘ FAILED
- *                  ↘ TIMEOUT
- *                  ↘ CANCELLED
+ * CREATED → WAITING_SNAPSHOT → READY_TO_SCHEDULE → SCHEDULED → SNAPSHOT_CONFIRMED
+ *                                                    ↘ CANCELLED ↘ SNAPSHOT_NOT_ADVANCED
+ *
+ * These states describe scheduling/audit only. Lakehouse Flow confirms the
+ * result from target snapshot progress, not task runtime callbacks.
  *
  * Unique key: workflow_code + workflow_version + biz_date + trigger_type + trigger_asset_key + trigger_snapshot_id
  */
@@ -25,6 +27,7 @@ import java.time.LocalDateTime;
     indexes = {
         @Index(name = "idx_instance_key", columnList = "instance_key", unique = true),
         @Index(name = "idx_workflow", columnList = "workflow_code,workflow_version"),
+        @Index(name = "idx_workflow_flow_plan_version", columnList = "flow_plan_version_id"),
         @Index(name = "idx_state", columnList = "state,updated_at DESC"),
         @Index(name = "idx_biz_date", columnList = "biz_date DESC")
     }
@@ -38,6 +41,13 @@ public class WorkflowInstance {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+
+    /**
+     * Optimistic concurrency version for scheduler-side state transitions.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 
     /**
      * Unique instance key for idempotency
@@ -57,6 +67,12 @@ public class WorkflowInstance {
      */
     @Column(name = "workflow_version", nullable = false)
     private Integer workflowVersion;
+
+    /**
+     * FlowPlanVersion that produced this workflow scheduling instance.
+     */
+    @Column(name = "flow_plan_version_id")
+    private Long flowPlanVersionId;
 
     /**
      * Business date for this workflow run (e.g., 2025-09-11)
@@ -83,22 +99,22 @@ public class WorkflowInstance {
     private String triggerReason;
 
     /**
-     * Instance state: CREATED, WAITING, RUNNING, SUCCESS, FAILED, TIMEOUT, CANCELLED
+     * Scheduling state. See {@link SchedulingStates}.
      */
     @Column(name = "state", nullable = false, length = 50)
     private String state;
 
     /**
-     * When execution started (transition to RUNNING)
+     * When Lakehouse Flow emitted the scheduling decision.
      */
-    @Column(name = "start_time")
-    private LocalDateTime startTime;
+    @Column(name = "scheduled_at")
+    private LocalDateTime scheduledAt;
 
     /**
-     * When execution ended
+     * When target snapshot evidence was last checked.
      */
-    @Column(name = "end_time")
-    private LocalDateTime endTime;
+    @Column(name = "last_snapshot_check_at")
+    private LocalDateTime lastSnapshotCheckAt;
 
     /**
      * Record creation time
@@ -112,13 +128,19 @@ public class WorkflowInstance {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * Initialize audit fields and the default scheduling state before insert.
+     */
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = LocalDateTime.now();
         if (updatedAt == null) updatedAt = LocalDateTime.now();
-        if (state == null) state = "CREATED";
+        if (state == null) state = SchedulingStates.CREATED;
     }
 
+    /**
+     * Refresh the update timestamp before changing workflow scheduling evidence.
+     */
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();

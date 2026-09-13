@@ -1,106 +1,74 @@
 package io.github.lakehouseflow.integration.paimon;
 
-import io.github.lakehouseflow.model.LakehouseEvent;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+import io.github.lakehouseflow.common.SnapshotIds;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshot;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSource;
+import io.github.lakehouseflow.integration.source.LakehouseSourceIdentity;
+import io.github.lakehouseflow.integration.source.SnapshotSourcePosition;
 
-import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
- * Paimon Snapshot Source - Adapter for scanning Paimon $snapshots table.
- *
- * This is a mock implementation for Phase 2. In production:
- * - Connect to actual Paimon catalog via JDBC
- * - Execute: SELECT * FROM catalog.db.`table$snapshots` WHERE snapshot_id > ?
- * - Map ResultSet to PaimonSnapshot
- *
- * For now, this mock returns sample data for testing the event ingestion loop.
+ * Paimon implementation of the format-neutral lakehouse snapshot source SPI.
  */
-@Component
-@Slf4j
-public class PaimonSnapshotSource {
+public class PaimonSnapshotSource implements LakehouseSnapshotSource {
 
-    private String catalogName = "paimon_catalog";
-    private String databaseName = "ods";
-    private String tableName = "orders";
+    private final PaimonSourceDefinition definition;
+    private final PaimonCatalogSnapshotReader snapshotReader;
 
     /**
-     * Scan Paimon snapshots since a given snapshot ID.
+     * Create a source for one configured Paimon table.
      *
-     * @param sinceSnapshotId Last processed snapshot ID (exclusive)
-     * @return List of new PaimonSnapshot objects
+     * @param definition immutable source definition
+     * @param snapshotReader native Paimon metadata reader
+     */
+    public PaimonSnapshotSource(
+            PaimonSourceDefinition definition,
+            PaimonCatalogSnapshotReader snapshotReader) {
+        this.definition = definition;
+        this.snapshotReader = snapshotReader;
+    }
+
+    /**
+     * Return this Paimon table's stable source identity.
      *
-     * Mock implementation: returns sample snapshots for testing.
-     * Production: would query actual Paimon $snapshots table via JDBC.
+     * @return source identity
      */
-    public List<PaimonSnapshot> scanSnapshots(Long sinceSnapshotId) {
-        List<PaimonSnapshot> snapshots = new ArrayList<>();
-
-        // Mock data for testing event ingestion
-        // In production, this would be actual Paimon snapshots from JDBC query
-        if (sinceSnapshotId == null || sinceSnapshotId < 1000) {
-            snapshots.add(PaimonSnapshot.builder()
-                    .snapshotId("1000")
-                    .schemaId("100")
-                    .commitUser("airflow")
-                    .commitIdentifier("commit_abc123")
-                    .commitKind("APPEND")
-                    .commitTime(System.currentTimeMillis())
-                    .watermark("2026-09-11T10:00:00")
-                    .deltaRecordCount(1000L)
-                    .changelogRecordCount(500L)
-                    .build());
-        }
-
-        if (sinceSnapshotId == null || sinceSnapshotId < 1001) {
-            snapshots.add(PaimonSnapshot.builder()
-                    .snapshotId("1001")
-                    .schemaId("100")
-                    .commitUser("airflow")
-                    .commitIdentifier("commit_def456")
-                    .commitKind("APPEND")
-                    .commitTime(System.currentTimeMillis())
-                    .watermark("2026-09-11T12:00:00")
-                    .deltaRecordCount(2000L)
-                    .changelogRecordCount(800L)
-                    .build());
-        }
-
-        log.debug("Scanned {} snapshots since {}", snapshots.size(), sinceSnapshotId);
-        return snapshots;
+    @Override
+    public LakehouseSourceIdentity identity() {
+        return definition.identity();
     }
 
     /**
-     * Convert PaimonSnapshot to LakehouseEvent.
+     * Read retained Paimon snapshots after the supplied snapshot id.
      *
-     * @param snapshot Paimon snapshot to convert
-     * @return LakehouseEvent ready to persist
+     * @param offsetExclusive previous Paimon snapshot id
+     * @return new snapshots
      */
-    public LakehouseEvent mapToLakehouseEvent(PaimonSnapshot snapshot) {
-        LakehouseEvent event = snapshot.toLakehouseEvent(catalogName, databaseName, tableName);
-        log.debug("Mapped snapshot {} to event {}", snapshot.getSnapshotId(), event.getEventId());
-        return event;
+    @Override
+    public List<LakehouseSnapshot> scanAfter(String offsetExclusive) {
+        return snapshotReader.scanAfter(definition, offsetExclusive);
     }
 
     /**
-     * Get the catalog name for this source.
+     * Inspect Paimon's retained snapshot range against the durable scheduler offset.
+     *
+     * @param durableOffset last completely projected Paimon snapshot id, or null
+     * @return current Paimon source position
      */
-    public String getCatalogName() {
-        return catalogName;
+    @Override
+    public SnapshotSourcePosition inspectPosition(String durableOffset) {
+        return snapshotReader.inspectPosition(definition, durableOffset);
     }
 
     /**
-     * Get the database name for this source.
+     * Compare Paimon snapshot ids numerically without narrowing them to primitive values.
+     *
+     * @return Paimon snapshot-id comparator
      */
-    public String getDatabaseName() {
-        return databaseName;
-    }
-
-    /**
-     * Get the table name for this source.
-     */
-    public String getTableName() {
-        return tableName;
+    @Override
+    public Comparator<String> offsetComparator() {
+        return SnapshotIds::compare;
     }
 }

@@ -14,6 +14,11 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class LakehouseFlowApplication {
 
+    /**
+     * Start the Lakehouse Flow Spring Boot application.
+     *
+     * @param args command line arguments passed to Spring Boot
+     */
     public static void main(String[] args) {
         SpringApplication.run(LakehouseFlowApplication.class, args);
     }

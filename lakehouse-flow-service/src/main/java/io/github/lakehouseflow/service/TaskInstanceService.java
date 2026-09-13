@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.service;
 
+import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.model.TaskInstance;
 import lombok.RequiredArgsConstructor;
@@ -12,13 +13,14 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Service for managing task instances.
+ * Service for managing task scheduling instances.
  *
  * State transitions:
- * CREATED → WAITING_DEPENDENCY → READY → DISPATCHING → RUNNING → SUCCESS
- *                                                            ↘ FAILED
- *                                                            ↘ TIMEOUT
- * FAILED → RETRY_WAITING → READY (if retries remain)
+ * CREATED → WAITING_SNAPSHOT → READY_TO_SCHEDULE → SCHEDULED → SNAPSHOT_CONFIRMED
+ *                                                    ↘ SKIPPED   ↘ SNAPSHOT_NOT_ADVANCED
+ *
+ * This service records Lakehouse Flow's scheduling decision and later snapshot
+ * evidence. It does not dispatch jobs or track executor runtime status.
  */
 @Service
 @Slf4j
@@ -29,7 +31,7 @@ public class TaskInstanceService {
     private final TaskInstanceRepository taskInstanceRepository;
 
     /**
-     * Create a new task instance.
+     * Create a new task scheduling instance.
      *
      * Idempotency: instance_key ensures duplicate creation is prevented.
      */
@@ -39,7 +41,65 @@ public class TaskInstanceService {
             Integer taskVersion,
             LocalDateTime bizDate) {
 
-        String instanceKey = buildInstanceKey(workflowInstanceId, taskCode, 1);
+        return createInstance(workflowInstanceId, taskCode, taskVersion, bizDate, null);
+    }
+
+    /**
+     * Create a new task scheduling instance with an optional target asset.
+     *
+     * The target asset is copied into the scheduling decision so the internal
+     * outbox publisher can freeze its baseline before publication.
+     *
+     * @param workflowInstanceId owning workflow scheduling instance
+     * @param taskCode task or node code
+     * @param taskVersion task definition version
+     * @param bizDate business date associated with the scheduling decision
+     * @param targetAssetKey target asset used for later snapshot confirmation
+     * @return newly created or existing task scheduling instance
+     */
+    public TaskInstance createInstance(
+            Long workflowInstanceId,
+            String taskCode,
+            Integer taskVersion,
+            LocalDateTime bizDate,
+            String targetAssetKey) {
+
+        return createInstance(
+                workflowInstanceId,
+                taskCode,
+                taskVersion,
+                bizDate,
+                targetAssetKey,
+                null,
+                null);
+    }
+
+    /**
+     * Create a task scheduling instance with optional definition anchors.
+     *
+     * FlowPlanVersion and ScheduleNode links make emitted intents traceable back
+     * to the published model. They are not execution handles and do not change
+     * the snapshot-based confirmation semantics.
+     *
+     * @param workflowInstanceId owning workflow scheduling instance
+     * @param taskCode task or node code
+     * @param taskVersion task definition version
+     * @param bizDate business date associated with the scheduling decision
+     * @param targetAssetKey target asset used for later snapshot confirmation
+     * @param flowPlanVersionId optional FlowPlanVersion id that produced this task
+     * @param scheduleNodeId optional ScheduleNode id that produced this task
+     * @return newly created or existing task scheduling instance
+     */
+    public TaskInstance createInstance(
+            Long workflowInstanceId,
+            String taskCode,
+            Integer taskVersion,
+            LocalDateTime bizDate,
+            String targetAssetKey,
+            Long flowPlanVersionId,
+            Long scheduleNodeId) {
+
+        String instanceKey = buildInstanceKey(workflowInstanceId, taskCode);
 
         // Check if already exists
         Optional<TaskInstance> existing = taskInstanceRepository.findByInstanceKey(instanceKey);
@@ -55,10 +115,11 @@ public class TaskInstanceService {
                 .workflowInstanceId(workflowInstanceId)
                 .taskCode(taskCode)
                 .taskVersion(taskVersion)
+                .flowPlanVersionId(flowPlanVersionId)
+                .scheduleNodeId(scheduleNodeId)
                 .bizDate(bizDate)
-                .state("CREATED")
-                .tryNumber(1)
-                .maxRetries(3)
+                .state(SchedulingStates.CREATED)
+                .targetAssetKey(targetAssetKey)
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
                 .build();
@@ -67,7 +128,7 @@ public class TaskInstanceService {
     }
 
     /**
-     * Transition task state with validation
+     * Transition task scheduling state with validation.
      */
     public void transitionState(Long taskId, String newState, String waitingReason) {
         Optional<TaskInstance> task = taskInstanceRepository.findById(taskId);
@@ -87,13 +148,11 @@ public class TaskInstanceService {
         t.setState(newState);
         t.setWaitingReason(waitingReason);
 
-        // Set timestamps
-        if ("DISPATCHING".equals(newState)) {
-            t.setSubmitTime(LocalDateTime.now());
-        } else if ("RUNNING".equals(newState)) {
-            t.setStartTime(LocalDateTime.now());
-        } else if ("SUCCESS".equals(newState) || "FAILED".equals(newState) || "TIMEOUT".equals(newState)) {
-            t.setEndTime(LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
+        if (SchedulingStates.SCHEDULED.equals(newState)) {
+            t.setScheduledAt(now);
+        } else if (SchedulingStates.isSnapshotOutcome(newState)) {
+            t.setLastSnapshotCheckAt(now);
         }
 
         taskInstanceRepository.save(t);
@@ -103,62 +162,165 @@ public class TaskInstanceService {
     /**
      * Validate state transition
      */
-    private boolean isValidTransition(String fromState, String toState) {
+    boolean isValidTransition(String fromState, String toState) {
         return switch (fromState) {
-            case "CREATED" -> toState.equals("WAITING_DEPENDENCY") || toState.equals("READY") || toState.equals("SKIPPED");
-            case "WAITING_DEPENDENCY" -> toState.equals("READY") || toState.equals("CANCELLED");
-            case "READY" -> toState.equals("DISPATCHING") || toState.equals("SKIPPED");
-            case "DISPATCHING" -> toState.equals("RUNNING");
-            case "RUNNING" -> toState.equals("SUCCESS") || toState.equals("FAILED") || toState.equals("TIMEOUT");
-            case "FAILED" -> toState.equals("RETRY_WAITING");
-            case "RETRY_WAITING" -> toState.equals("READY");
+            case SchedulingStates.CREATED -> toState.equals(SchedulingStates.WAITING_SNAPSHOT)
+                    || toState.equals(SchedulingStates.READY_TO_SCHEDULE)
+                    || toState.equals(SchedulingStates.CANCELLED)
+                    || toState.equals(SchedulingStates.SKIPPED);
+            case SchedulingStates.WAITING_SNAPSHOT -> toState.equals(SchedulingStates.READY_TO_SCHEDULE)
+                    || toState.equals(SchedulingStates.CANCELLED)
+                    || toState.equals(SchedulingStates.SKIPPED);
+            case SchedulingStates.READY_TO_SCHEDULE -> toState.equals(SchedulingStates.SCHEDULED)
+                    || toState.equals(SchedulingStates.CANCELLED)
+                    || toState.equals(SchedulingStates.SKIPPED);
+            case SchedulingStates.SCHEDULED -> toState.equals(SchedulingStates.SNAPSHOT_CONFIRMED)
+                    || toState.equals(SchedulingStates.SNAPSHOT_NOT_ADVANCED)
+                    || toState.equals(SchedulingStates.CANCELLED);
+            case SchedulingStates.SNAPSHOT_NOT_ADVANCED -> toState.equals(SchedulingStates.WAITING_SNAPSHOT)
+                    || toState.equals(SchedulingStates.READY_TO_SCHEDULE)
+                    || toState.equals(SchedulingStates.CANCELLED)
+                    || toState.equals(SchedulingStates.SKIPPED);
             default -> false;
         };
     }
 
     /**
-     * Mark task as waiting for dependencies
+     * Mark task as waiting for snapshot evidence.
      */
-    public void markWaiting(Long taskId, String reason) {
-        transitionState(taskId, "WAITING_DEPENDENCY", reason);
+    public void markWaitingForSnapshot(Long taskId, String reason) {
+        transitionState(taskId, SchedulingStates.WAITING_SNAPSHOT, reason);
     }
 
     /**
-     * Mark task as ready to dispatch
+     * Mark task as schedulable. This is a decision state, not executor readiness.
      */
-    public void markReady(Long taskId) {
-        transitionState(taskId, "READY", null);
+    public void markSchedulable(Long taskId) {
+        transitionState(taskId, SchedulingStates.READY_TO_SCHEDULE, null);
     }
 
     /**
-     * Record external job ID when task is dispatched
+     * Mark that Lakehouse Flow emitted the scheduling decision.
      */
-    public void recordExternalJob(Long taskId, String executorType, String externalJobId) {
-        Optional<TaskInstance> task = taskInstanceRepository.findById(taskId);
-        if (task.isPresent()) {
-            TaskInstance t = task.get();
-            t.setExecutorType(executorType);
-            t.setExternalJobId(externalJobId);
-            taskInstanceRepository.save(t);
-            log.info("Recorded external job {} for task {}", externalJobId, taskId);
+    public void markScheduled(Long taskId) {
+        transitionState(taskId, SchedulingStates.SCHEDULED, null);
+    }
+
+    /**
+     * Mark that Lakehouse Flow emitted the scheduling decision and record the
+     * target snapshot baseline captured immediately before scheduling.
+     */
+    public void markScheduled(Long taskId, String targetAssetKey, String baselineSnapshotId) {
+        recordSchedulingBaseline(taskId, targetAssetKey, baselineSnapshotId);
+        transitionState(taskId, SchedulingStates.SCHEDULED, null);
+    }
+
+    /**
+     * Mark a task as skipped by a scheduling action.
+     *
+     * @param taskId task instance id
+     * @param reason reason recorded for audit and operator visibility
+     */
+    public void markSkipped(Long taskId, String reason) {
+        transitionState(taskId, SchedulingStates.SKIPPED, reason);
+    }
+
+    /**
+     * Cancel a task scheduling instance.
+     *
+     * @param taskId task instance id
+     * @param reason cancellation reason recorded on the task
+     */
+    public void cancel(Long taskId, String reason) {
+        transitionState(taskId, SchedulingStates.CANCELLED, reason);
+    }
+
+    /**
+     * Record a non-terminal snapshot confirmation check.
+     *
+     * The task remains SCHEDULED until target snapshot progress is confirmed or
+     * the confirmation window expires.
+     */
+    public void recordSnapshotCheck(
+            Long taskId,
+            String targetAssetKey,
+            String baselineSnapshotId,
+            String observedSnapshotId,
+            String waitingReason) {
+
+        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, waitingReason, true);
+    }
+
+    /**
+     * Confirm that the target asset snapshot advanced after the baseline.
+     */
+    public void confirmSnapshotProgress(
+            Long taskId,
+            String targetAssetKey,
+            String baselineSnapshotId,
+            String observedSnapshotId) {
+
+        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, null, true);
+        transitionState(taskId, SchedulingStates.SNAPSHOT_CONFIRMED, null);
+    }
+
+    /**
+     * Record that the target snapshot has not advanced after the baseline.
+     */
+    public void markSnapshotNotAdvanced(
+            Long taskId,
+            String targetAssetKey,
+            String baselineSnapshotId,
+            String observedSnapshotId,
+            String reason) {
+
+        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, reason, true);
+        transitionState(taskId, SchedulingStates.SNAPSHOT_NOT_ADVANCED, reason);
+    }
+
+    /**
+     * Capture the target snapshot baseline immediately before scheduling.
+     *
+     * @param taskId task instance id
+     * @param targetAssetKey target asset used to confirm scheduling outcome
+     * @param baselineSnapshotId snapshot observed before scheduling intent emission
+     */
+    private void recordSchedulingBaseline(
+            Long taskId,
+            String targetAssetKey,
+            String baselineSnapshotId) {
+
+        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, baselineSnapshotId, null, false);
+    }
+
+    /**
+     * Persist target snapshot evidence on a task instance.
+     *
+     * @param taskId task instance id
+     * @param targetAssetKey target asset used for confirmation
+     * @param baselineSnapshotId snapshot captured before scheduling
+     * @param observedSnapshotId latest snapshot observed during confirmation
+     * @param waitingReason reason progress is still pending or failed
+     * @param updateCheckTime whether to refresh the last snapshot check timestamp
+     */
+    private void recordSnapshotEvidence(
+            Long taskId,
+            String targetAssetKey,
+            String baselineSnapshotId,
+            String observedSnapshotId,
+            String waitingReason,
+            boolean updateCheckTime) {
+
+        TaskInstance t = taskInstanceRepository.findById(taskId)
+                .orElseThrow(() -> new RuntimeException("Task instance not found: " + taskId));
+        t.setTargetAssetKey(targetAssetKey);
+        t.setBaselineSnapshotId(baselineSnapshotId);
+        t.setObservedSnapshotId(observedSnapshotId);
+        t.setWaitingReason(waitingReason);
+        if (updateCheckTime) {
+            t.setLastSnapshotCheckAt(LocalDateTime.now());
         }
-    }
-
-    /**
-     * Handle task retry
-     */
-    public void handleRetry(Long taskId) {
-        Optional<TaskInstance> task = taskInstanceRepository.findById(taskId);
-        if (task.isPresent()) {
-            TaskInstance t = task.get();
-            if (t.getTryNumber() < t.getMaxRetries()) {
-                log.info("Task {} will retry (attempt {} of {})", taskId, t.getTryNumber() + 1, t.getMaxRetries());
-                transitionState(taskId, "RETRY_WAITING", null);
-            } else {
-                log.warn("Task {} exceeded max retries ({})", taskId, t.getMaxRetries());
-                throw new RuntimeException("Max retries exceeded");
-            }
-        }
+        taskInstanceRepository.save(t);
     }
 
     /**
@@ -170,25 +332,25 @@ public class TaskInstanceService {
     }
 
     /**
-     * Find tasks waiting for dependencies
+     * Find tasks waiting for snapshot evidence.
      */
     @Transactional(readOnly = true)
-    public List<TaskInstance> findWaitingForDependencies() {
-        return taskInstanceRepository.findWaitingForDependencies();
+    public List<TaskInstance> findWaitingForSnapshot() {
+        return taskInstanceRepository.findWaitingForSnapshot();
     }
 
     /**
-     * Find tasks ready to dispatch
+     * Find tasks ready to schedule.
      */
     @Transactional(readOnly = true)
-    public List<TaskInstance> findReadyTasks() {
-        return taskInstanceRepository.findByStateOrderByCreatedAtAsc("READY");
+    public List<TaskInstance> findSchedulableTasks() {
+        return taskInstanceRepository.findDeliverableReadyTasks();
     }
 
     /**
      * Build instance key for idempotency
      */
-    private String buildInstanceKey(Long workflowInstanceId, String taskCode, Integer tryNumber) {
-        return String.format("%d:%s:%d", workflowInstanceId, taskCode, tryNumber);
+    private String buildInstanceKey(Long workflowInstanceId, String taskCode) {
+        return String.format("%d:%s", workflowInstanceId, taskCode);
     }
 }

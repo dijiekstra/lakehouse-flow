@@ -1,5 +1,7 @@
 # Lakehouse Flow - Phase 2: Event Processing & Scheduling Loops - 设计文档
 
+> 历史文档：本文包含早期执行状态机、callback 和下游查询 READY API 方案，不代表当前实现。现行方案由 Lakehouse Flow 内部发布 outbox，不接收下游结果，并只以受管目标资产 snapshot 推进确认结果。
+
 **日期**: 2026-09-11  
 **版本**: 0.1.0-SNAPSHOT  
 **阶段**: Phase 2 (Event Processing & Scheduling Loops)
@@ -589,4 +591,3 @@ class LakehouseFlowSync:
 - REST API for queries and callbacks
 - 10+ 单元/集成测试
 - 完整文档
-

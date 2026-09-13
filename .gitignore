@@ -23,6 +23,8 @@ dist/
 
 # Maven
 .m2/
+.mvn/wrapper/dists/
+.mvn/wrapper/generated-settings.xml
 
 # Gradle
 .gradle/

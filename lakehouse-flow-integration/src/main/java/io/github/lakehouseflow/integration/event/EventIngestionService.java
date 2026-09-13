@@ -1,151 +1,110 @@
 package io.github.lakehouseflow.integration.event;
 
-import io.github.lakehouseflow.integration.paimon.PaimonSnapshotSource;
-import io.github.lakehouseflow.model.EventConsumerOffset;
-import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
-import io.github.lakehouseflow.dao.LakehouseEventRepository;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshot;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotEventMapper;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSource;
+import io.github.lakehouseflow.integration.source.LakehouseSnapshotSourceRegistry;
+import io.github.lakehouseflow.integration.source.LakehouseSourceIdentity;
+import io.github.lakehouseflow.model.EventConsumerOffset;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
+import java.time.Duration;
 
 /**
- * Event Ingestion Service - Orchestrates event ingestion from Paimon snapshots.
+ * Orchestrates snapshot ingestion for every configured lakehouse format.
  *
- * Responsibilities:
- * 1. Scan Paimon snapshots from last processed position
- * 2. Convert snapshots to LakehouseEvent
- * 3. Handle deduplication (same event_id = skip, log, continue)
- * 4. Update EventConsumerOffset to track progress
- * 5. Log and metrics
- *
- * Design principles:
- * - Idempotent: same snapshot scanned twice → skip duplicate event via unique constraint
- * - Atomic: snapshot → event → offset all succeed or all fail
- * - Observable: every step logged with relevant fields
+ * <p>Each adapter owns metadata discovery and offset ordering. This service owns durable offset
+ * lookup, event mapping, and the per-snapshot transaction boundary shared by Paimon, Iceberg,
+ * Hudi, and future integrations.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class EventIngestionService {
 
-    private final PaimonSnapshotSource paimonSnapshotSource;
-    private final LakehouseEventRepository lakehouseEventRepository;
+    private final LakehouseSnapshotSourceRegistry sourceRegistry;
     private final EventConsumerOffsetRepository eventConsumerOffsetRepository;
-
-    private static final String SOURCE_TYPE = "PAIMON";
+    private final LakehouseSnapshotEventMapper eventMapper;
+    private final SnapshotIngestionTransactionService snapshotIngestionTransactionService;
+    private final SnapshotSourceMetrics snapshotSourceMetrics;
 
     /**
-     * Ingest events from Paimon snapshots.
+     * Ingest every configured source while isolating failures between source tables.
      *
-     * Process:
-     * 1. Load last processed offset for PAIMON source
-     * 2. Scan new snapshots from Paimon
-     * 3. Convert each to LakehouseEvent
-     * 4. Persist (handling duplicates gracefully)
-     * 5. Update consumer offset to track progress
-     *
-     * @return Number of new events ingested (excluding duplicates)
+     * @return number of newly inserted lakehouse events
      */
-    @Transactional
-    public int ingestFromPaimon() {
-        String sourceName = buildSourceName();
-        log.info("Starting Paimon event ingestion for {}", sourceName);
-
-        // Load last processed offset
-        Optional<EventConsumerOffset> lastOffset = eventConsumerOffsetRepository
-                .findBySourceTypeAndSourceName(SOURCE_TYPE, sourceName);
-        Long lastSnapshotId = lastOffset.map(o -> Long.parseLong(o.getOffsetValue())).orElse(null);
-
-        log.debug("Last processed snapshot ID: {}", lastSnapshotId);
-
-        // Scan new snapshots
-        var snapshots = paimonSnapshotSource.scanSnapshots(lastSnapshotId);
-        if (snapshots.isEmpty()) {
-            log.debug("No new snapshots found since {}", lastSnapshotId);
-            return 0;
-        }
-
-        log.info("Found {} new snapshots to ingest", snapshots.size());
-
-        int successCount = 0;
-        int duplicateCount = 0;
-        Long maxSnapshotId = lastSnapshotId;
-
-        for (var snapshot : snapshots) {
+    public int ingestAllSources() {
+        int inserted = 0;
+        for (LakehouseSnapshotSource source : sourceRegistry.sources()) {
+            long startedAt = System.nanoTime();
             try {
-                // Convert and persist
-                LakehouseEvent event = paimonSnapshotSource.mapToLakehouseEvent(snapshot);
-                lakehouseEventRepository.save(event);
-
-                log.debug("Ingested event: {} from snapshot {}", event.getEventId(), snapshot.getSnapshotId());
-                successCount++;
-
-                // Track max snapshot ID for offset update
-                Long snapshotIdLong = Long.parseLong(snapshot.getSnapshotId());
-                if (maxSnapshotId == null || snapshotIdLong > maxSnapshotId) {
-                    maxSnapshotId = snapshotIdLong;
-                }
-
-            } catch (DataIntegrityViolationException e) {
-                // Duplicate event_id - this is expected and safe
-                duplicateCount++;
-                log.debug("Skipped duplicate event from snapshot {}: {}",
-                        snapshot.getSnapshotId(), e.getMessage());
-            } catch (Exception e) {
-                log.error("Error ingesting snapshot {}: {}",
-                        snapshot.getSnapshotId(), e.getMessage(), e);
-                // Continue processing other snapshots; don't fail the whole batch
+                int sourceInserted = ingestSource(source);
+                inserted += sourceInserted;
+                snapshotSourceMetrics.recordScan(
+                        source.identity(),
+                        "success",
+                        sourceInserted,
+                        Duration.ofNanos(System.nanoTime() - startedAt));
+            } catch (RuntimeException e) {
+                LakehouseSourceIdentity identity = source.identity();
+                snapshotSourceMetrics.recordScan(
+                        identity,
+                        "failure",
+                        0,
+                        Duration.ofNanos(System.nanoTime() - startedAt));
+                log.error("Snapshot source scan failed for {}/{}: {}",
+                        identity.sourceType(), identity.sourceName(), e.getMessage(), e);
             }
         }
-
-        // Update consumer offset only if we processed at least one snapshot
-        if (maxSnapshotId != null) {
-            updateConsumerOffset(sourceName, maxSnapshotId.toString());
-            log.info("Updated consumer offset to {} for {}", maxSnapshotId, sourceName);
-        }
-
-        log.info("Paimon ingestion complete: {} ingested, {} duplicates, {} total processed",
-                successCount, duplicateCount, snapshots.size());
-
-        return successCount;
+        return inserted;
     }
 
     /**
-     * Update or create EventConsumerOffset.
+     * Ingest one table source through its contiguous successful snapshot prefix.
+     *
+     * <p>If projection of one snapshot fails, later snapshots from the same source are not
+     * processed. The failed offset remains uncommitted and is retried by the next scan.
+     *
+     * @param source configured lakehouse snapshot source
+     * @return number of newly inserted events
      */
-    @Transactional
-    protected void updateConsumerOffset(String sourceName, String offsetValue) {
-        Optional<EventConsumerOffset> existing = eventConsumerOffsetRepository
-                .findBySourceTypeAndSourceName(SOURCE_TYPE, sourceName);
+    public int ingestSource(LakehouseSnapshotSource source) {
+        LakehouseSourceIdentity identity = source.identity();
+        Comparator<String> offsetComparator = source.offsetComparator();
+        Optional<EventConsumerOffset> lastOffset = eventConsumerOffsetRepository
+                .findBySourceTypeAndSourceName(identity.sourceType(), identity.sourceName());
+        String offsetExclusive = lastOffset.map(EventConsumerOffset::getOffsetValue).orElse(null);
 
-        if (existing.isPresent()) {
-            EventConsumerOffset offset = existing.get();
-            offset.setOffsetValue(offsetValue);
-            offset.setUpdatedAt(LocalDateTime.now());
-            eventConsumerOffsetRepository.save(offset);
-        } else {
-            EventConsumerOffset offset = EventConsumerOffset.builder()
-                    .sourceType(SOURCE_TYPE)
-                    .sourceName(sourceName)
-                    .offsetValue(offsetValue)
-                    .build();
-            eventConsumerOffsetRepository.save(offset);
+        List<LakehouseSnapshot> snapshots = new ArrayList<>(source.scanAfter(offsetExclusive));
+        snapshots.sort((left, right) -> offsetComparator.compare(
+                left.sourceOffset(), right.sourceOffset()));
+        int inserted = 0;
+        for (LakehouseSnapshot snapshot : snapshots) {
+            try {
+                var event = eventMapper.map(identity, snapshot);
+                var result = snapshotIngestionTransactionService.processSnapshot(
+                        identity.sourceName(),
+                        snapshot.sourceOffset(),
+                        offsetComparator,
+                        event);
+                if (result.inserted()) {
+                    inserted++;
+                }
+            } catch (RuntimeException e) {
+                log.error("Snapshot projection failed for {}/{} at offset {}; later offsets will wait: {}",
+                        identity.sourceType(), identity.sourceName(), snapshot.sourceOffset(),
+                        e.getMessage(), e);
+                break;
+            }
         }
+        return inserted;
     }
 
-    /**
-     * Build source name from catalog/database/table.
-     */
-    private String buildSourceName() {
-        return String.format("%s.%s.%s",
-                paimonSnapshotSource.getCatalogName(),
-                paimonSnapshotSource.getDatabaseName(),
-                paimonSnapshotSource.getTableName());
-    }
 }
