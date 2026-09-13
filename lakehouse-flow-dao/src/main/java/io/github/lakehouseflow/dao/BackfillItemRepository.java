@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.dao;
 
+import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.model.BackfillItem;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -16,6 +17,18 @@ import java.util.Set;
  */
 @Repository
 public interface BackfillItemRepository extends JpaRepository<BackfillItem, Long> {
+
+    /**
+     * Count currently blocked backfill items by stable scheduler status.
+     *
+     * @return grouped date-concurrency and DAG-dependency counts
+     */
+    @Query("SELECT i.status AS status, COUNT(i.id) AS itemCount " +
+           "FROM BackfillItem i " +
+           "WHERE i.status IN ('" + BackfillItemStatuses.WAITING_CONCURRENCY + "', '" +
+           BackfillItemStatuses.WAITING_DEPENDENCY + "') " +
+           "GROUP BY i.status")
+    List<BackfillItemStatusCount> countBlockedByStatus();
 
     /**
      * Find the owning batch id without materializing a potentially stale item.

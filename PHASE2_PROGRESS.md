@@ -2,7 +2,7 @@
 
 **最后更新**: 2026-09-13
 **基准用途**: 后续开发进度、差距检查和版本目标均以本文档为准。
-**当前推进项**: 补数功能模型已达到退出标准；G2 已移除旧 `AssetDependency` 运行时路径，统一到发布 FlowPlan；G7 已补齐 delivery/source 指标、双轨 AssetState 对账和失败关闭补偿；G11/G12 已完成 snapshot 路由隔离和跨实例目标日期准入。G13 已完成基础策略执行，并对未实现的 mode、priority 和 dedupe window 失败关闭。G10 的整体 Testcontainers E2E 与 Iceberg/Hudi adapter、G8 Flow/Node 聚合与稳定游标均按当前决策后移。
+**当前推进项**: 补数功能模型已达到退出标准；G2 已统一到发布 FlowPlan；G7 已补齐 delivery/source 指标和双轨 AssetState 对账；G11/G12 已完成 snapshot 路由隔离和跨实例目标日期准入；G14 已完成调度决策与等待积压可观测性。下一功能项回到 G13 高级并发策略；G8 查询聚合、G9 可信身份/RBAC、G10 整体 E2E 与 Iceberg/Hudi adapter 均按当前决策后移。
 
 ## 目标边界
 
@@ -65,6 +65,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 | G11 | Action snapshot 与正常自然触发未隔离 | 已完成 | LF-0.4 / LF-0.5 | 已按持久化 `intentKey -> triggerType` 分类；补数、恢复、重跑只推进所属实例，非法/中间/维护 snapshot 失败关闭；action 查询也不再把未归属的 latest 推进显示为成功。日期隔离要求 FlowPlan 使用 `${bizDate}` 分区资产。 |
 | G12 | 跨实例目标资产日期准入缺失 | 基础完成 | LF-0.5 | 已建立同 `targetAssetKey + bizDate` 的持久化唯一槽位和行锁，覆盖正常、补数、恢复、重跑；冲突项留在 READY，确认/超时释放，过期租约可被重占且旧 holder 不能释放新 holder。真实 PostgreSQL 竞争语义待整体 E2E 验证。 |
 | G13 | 发布版本控制策略未执行 | 基础完成 | LF-0.5 | 已执行版本/节点确认超时、版本目标准入租约和 `maxActiveInstances`；支持 `PARALLEL` / `SERIAL_WAIT`，超限保持 READY。`SERIAL_DISCARD`、优先级队列和 dedupe window 尚未实现。 |
+| G14 | 调度决策可观测性不足 | 已完成 | LF-0.5 | 已按低基数结果记录发布版本检查、自然触发决策和耗时，按稳定状态/类别聚合 task 与补数等待积压，并输出高维结构化证据和 Prometheus 初始告警基线。 |
 
 ## 已完成推进项
 
@@ -211,6 +212,20 @@ G13 剩余增强：
 1. 在明确触发丢弃和优先级排队的审计语义后，再实现 `SERIAL_DISCARD` / `SERIAL_PRIORITY`。
 2. 真实多 scheduler 节点下的 PostgreSQL 行锁竞争归入整体 Testcontainers E2E，当前按决策暂缓。
 
+### G14 / LF-0.5: 调度决策可观测性
+
+已完成：
+
+1. 新增 `FlowPlanDecisionMetrics`，按 `TRIGGER_POLICY_FILTERED` / `ASSET_UNMATCHED` / `MATCHED` 统计每个发布版本的 snapshot 检查结果。
+2. 对匹配版本按 `EMITTED` / `BLOCKED_CONDITION` / `DEDUPLICATED` / `FAILED` 统计决策次数和耗时。
+3. metric tag 只保留稳定枚举，不写 Flow code、asset key、snapshot id 或 trigger key；高维证据进入结构化日志和 `TriggerHistory`。
+4. 评估异常记录 `FAILED` 后继续抛出，保持摄入事务和 source offset 失败关闭；指标不参与 snapshot 结果判断。
+5. Mockito 和 `SimpleMeterRegistry` 测试覆盖两个 metrics public 方法、全部检查/决策结果以及异常传播。
+6. 新增 `SchedulingBacklogMetrics`，通过两次分组查询刷新四类 task 非终态等待阶段和两类补数阻塞 gauge；不读取或标记自由文本原因。
+7. README 已给出 decision、source、delivery 和 backlog 的 P1/P2 初始告警阈值，并明确正常阻塞指标只用于趋势与排障。
+
+G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、补数稳定阻塞类别和初始告警口径均具备低基数指标与直接单元测试。已达到，后续只按真实运行反馈校准阈值。
+
 ## 最近完成推进项
 
 ### G4 / G5 / LF-0.4: Action 与补数控制能力增强
@@ -290,7 +305,7 @@ G13 剩余增强：
 | 失败恢复 | 支持确定性的 `FULL_SCOPE` 和单失败节点 `FAILED_NODE_CASCADE`；多失败节点、缺父 join 和范围不闭合均 fail closed | 通过 |
 | 审计查询 | action、替代批次、逐节点 intent 和 baseline/observed snapshot 证据可关联查询，action 状态与 snapshot 结果分离 | 通过 |
 | 正常推进隔离 | 补数、恢复和重跑 snapshot 不产生额外正常实例；历史分区不推进当前日期分区状态；未归属 snapshot 不显示为成功 | 通过 |
-| 质量门槛 | `./mvnw test` 零 failure/error/skip；service line >= 90%、branch >= 65%；每个显式 public service 方法都有直接单元测试调用 | 通过：303 tests，line 90.9%，branch 69.5%；显式 public service 方法直接调用检查通过，delivery query service 1/1、source reconciliation service 3/3 |
+| 质量门槛 | `./mvnw test` 零 failure/error/skip；service line >= 90%、branch >= 65%；每个显式 public service 方法都有直接单元测试调用 | 通过：308 tests，line 91.1%，branch 69.5%；显式 public service 方法直接调用检查通过，decision metrics 2/2、scheduling backlog metrics 1/1、delivery query service 1/1、source reconciliation service 3/3 |
 
 退出规则：以上门槛必须同时通过。达到后，补数专题只接受缺陷修复和整体能力带来的必要适配，不再独立扩展功能；开发回到整体版本差距。补数审批上限按已确认决策暂缓，真实 PostgreSQL/Flyway 验证归入 Lakehouse Flow 整体 Testcontainers E2E，二者都不阻塞本专题退出。
 
@@ -322,7 +337,7 @@ G13 剩余增强：
 
 当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。Testcontainers 留到后续系统级 E2E：从 API/事件入口贯穿 PostgreSQL/Flyway、事务与约束、FlowPlan 决策、内部 outbox 发布、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独模块，也不用来替代当前单元测试。
 
-2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean test` 共 303 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 90.9%、branch 69.5%、method 90.5%。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
+2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean test` 共 308 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 91.1%、branch 69.5%、method 90.6%。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 decision metrics 为 2/2、scheduling backlog metrics 为 1/1、delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
 
 每次推进后至少执行：
 

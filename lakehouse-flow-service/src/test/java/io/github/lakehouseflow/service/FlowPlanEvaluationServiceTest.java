@@ -16,6 +16,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -64,6 +66,9 @@ class FlowPlanEvaluationServiceTest {
 
     @Mock
     private TriggerHistoryService triggerHistoryService;
+
+    @Mock
+    private FlowPlanDecisionMetrics flowPlanDecisionMetrics;
 
     @InjectMocks
     private FlowPlanEvaluationService flowPlanEvaluationService;
@@ -118,6 +123,8 @@ class FlowPlanEvaluationServiceTest {
         verify(taskInstanceService).markWaitingForSnapshot(
                 72L,
                 "Waiting for upstream snapshot confirmation: root");
+        verify(flowPlanDecisionMetrics).recordInspection(FlowPlanInspectionOutcome.MATCHED);
+        verify(flowPlanDecisionMetrics).recordDecision(eq(FlowPlanTriggerDecision.EMITTED), any(Duration.class));
     }
 
     /**
@@ -191,6 +198,9 @@ class FlowPlanEvaluationServiceTest {
         assertFalse(results.get(0).schedulingIntentEmitted());
         assertEquals("waiting payments", results.get(0).reason());
         verify(workflowInstanceService, never()).createInstance(any(), any(), any(), any(), any(), any(), any());
+        verify(flowPlanDecisionMetrics).recordDecision(
+                eq(FlowPlanTriggerDecision.BLOCKED_CONDITION),
+                any(Duration.class));
     }
 
     /**
@@ -216,6 +226,9 @@ class FlowPlanEvaluationServiceTest {
         assertFalse(results.get(0).schedulingIntentEmitted());
         assertEquals(11L, results.get(0).workflowInstanceId());
         verify(flowPlanConditionService, never()).evaluate(any(), any());
+        verify(flowPlanDecisionMetrics).recordDecision(
+                eq(FlowPlanTriggerDecision.DEDUPLICATED),
+                any(Duration.class));
     }
 
     /**
@@ -232,6 +245,52 @@ class FlowPlanEvaluationServiceTest {
 
         assertTrue(results.isEmpty());
         verify(scheduleNodeRepository, never()).findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L);
+        verify(flowPlanDecisionMetrics).recordInspection(FlowPlanInspectionOutcome.TRIGGER_POLICY_FILTERED);
+    }
+
+    /** Verify an unrelated changed asset is observable without creating a trigger decision. */
+    @Test
+    void evaluateTriggeredAssetRecordsUnmatchedInspection() {
+        FlowPlanVersion version = version(Map.of());
+        ScheduleNode root = node(61L, "root", List.of(), rootDependency(), "dwd");
+        when(flowPlanVersionRepository.findByStatusOrderByUpdatedAtAsc(FlowPlanVersionStatuses.PUBLISHED))
+                .thenReturn(List.of(version));
+        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L))
+                .thenReturn(List.of(root));
+        when(flowPlanGraphService.validateAndOrder(List.of(root))).thenReturn(List.of(root));
+        when(flowPlanConditionService.referencesAsset(rootDependency(), BIZ_DATE.toLocalDate(), ASSET))
+                .thenReturn(false);
+
+        List<FlowPlanEvaluationService.FlowPlanTriggerOutcome> results =
+                flowPlanEvaluationService.evaluateTriggeredAsset(ASSET, "101", BIZ_DATE);
+
+        assertTrue(results.isEmpty());
+        verify(flowPlanDecisionMetrics).recordInspection(FlowPlanInspectionOutcome.ASSET_UNMATCHED);
+        verify(flowPlanDecisionMetrics, never()).recordDecision(any(), any());
+    }
+
+    /** Verify evaluation failures remain visible and propagate to the ingestion transaction. */
+    @Test
+    void evaluateTriggeredAssetRecordsAndRethrowsFailure() {
+        FlowPlanVersion version = version(Map.of());
+        ScheduleNode root = node(61L, "root", List.of(), rootDependency(), "dwd");
+        when(flowPlanVersionRepository.findByStatusOrderByUpdatedAtAsc(FlowPlanVersionStatuses.PUBLISHED))
+                .thenReturn(List.of(version));
+        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L))
+                .thenReturn(List.of(root));
+        when(flowPlanGraphService.validateAndOrder(List.of(root))).thenReturn(List.of(root));
+        when(flowPlanConditionService.referencesAsset(rootDependency(), BIZ_DATE.toLocalDate(), ASSET))
+                .thenReturn(true);
+        when(triggerHistoryService.findByTriggerKey(anyString()))
+                .thenThrow(new IllegalStateException("trigger store unavailable"));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> flowPlanEvaluationService.evaluateTriggeredAsset(ASSET, "101", BIZ_DATE));
+
+        verify(flowPlanDecisionMetrics).recordDecision(
+                eq(FlowPlanTriggerDecision.FAILED),
+                any(Duration.class));
     }
 
     /**
@@ -249,10 +308,13 @@ class FlowPlanEvaluationServiceTest {
                 FlowPlanEvaluationService.FlowPlanTriggerOutcome.deduped(version, "trigger-3", 12L);
 
         assertTrue(emitted.schedulingIntentEmitted());
+        assertEquals(FlowPlanTriggerDecision.EMITTED, emitted.decision());
         assertEquals(71L, emitted.firstTaskInstanceId());
         assertFalse(skipped.schedulingIntentEmitted());
+        assertEquals(FlowPlanTriggerDecision.BLOCKED_CONDITION, skipped.decision());
         assertEquals("waiting", skipped.reason());
         assertFalse(deduped.schedulingIntentEmitted());
+        assertEquals(FlowPlanTriggerDecision.DEDUPLICATED, deduped.decision());
         assertEquals(12L, deduped.workflowInstanceId());
     }
 

@@ -10,12 +10,14 @@ import io.github.lakehouseflow.model.TaskInstance;
 import io.github.lakehouseflow.model.TriggerHistory;
 import io.github.lakehouseflow.model.WorkflowInstance;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -36,6 +38,7 @@ import java.util.stream.Collectors;
  * snapshots, and no executor or runtime status is consulted.
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 @Transactional
 public class FlowPlanEvaluationService {
@@ -50,6 +53,7 @@ public class FlowPlanEvaluationService {
     private final WorkflowInstanceService workflowInstanceService;
     private final TaskInstanceService taskInstanceService;
     private final TriggerHistoryService triggerHistoryService;
+    private final FlowPlanDecisionMetrics flowPlanDecisionMetrics;
 
     /**
      * Evaluate every published snapshot-driven FlowPlan after an asset advances.
@@ -107,6 +111,7 @@ public class FlowPlanEvaluationService {
         for (FlowPlanVersion version : flowPlanVersionRepository
                 .findByStatusOrderByUpdatedAtAsc(FlowPlanVersionStatuses.PUBLISHED)) {
             if (!allowsSnapshotTrigger(version)) {
+                flowPlanDecisionMetrics.recordInspection(FlowPlanInspectionOutcome.TRIGGER_POLICY_FILTERED);
                 continue;
             }
             List<ScheduleNode> nodes = flowPlanGraphService.validateAndOrder(scheduleNodeRepository
@@ -121,8 +126,10 @@ public class FlowPlanEvaluationService {
                                     assetKey)))
                     .findFirst();
             if (matchedAssetKey.isEmpty()) {
+                flowPlanDecisionMetrics.recordInspection(FlowPlanInspectionOutcome.ASSET_UNMATCHED);
                 continue;
             }
+            flowPlanDecisionMetrics.recordInspection(FlowPlanInspectionOutcome.MATCHED);
             outcomes.add(evaluateAndEmit(
                     version,
                     nodes,
@@ -153,62 +160,99 @@ public class FlowPlanEvaluationService {
             String snapshotId,
             LocalDateTime bizDate) {
 
+        long startedAt = System.nanoTime();
         String triggerKey = buildTriggerKey(version, assetKey, snapshotId, bizDate);
-        Optional<TriggerHistory> existing = triggerHistoryService.findByTriggerKey(triggerKey);
-        if (existing.isPresent()) {
-            return FlowPlanTriggerOutcome.deduped(version, triggerKey, existing.get().getWorkflowInstanceId());
-        }
+        try {
+            Optional<TriggerHistory> existing = triggerHistoryService.findByTriggerKey(triggerKey);
+            if (existing.isPresent()) {
+                FlowPlanTriggerOutcome outcome = FlowPlanTriggerOutcome.deduped(
+                        version,
+                        triggerKey,
+                        existing.get().getWorkflowInstanceId());
+                recordDecision(outcome, assetKey, snapshotId, startedAt);
+                return outcome;
+            }
 
-        List<EvaluationResult> rootResults = roots.stream()
-                .map(node -> flowPlanConditionService.evaluate(
-                        effectiveDependencySpec(version, node),
-                        bizDate.toLocalDate()))
-                .toList();
-        Optional<EvaluationResult> blocked = rootResults.stream()
-                .filter(result -> !Boolean.TRUE.equals(result.getSatisfied()))
-                .findFirst();
-        if (blocked.isPresent()) {
-            String reason = blocked.get().getWaitingReason();
-            triggerHistoryService.recordSkippedTrigger(
+            List<EvaluationResult> rootResults = roots.stream()
+                    .map(node -> flowPlanConditionService.evaluate(
+                            effectiveDependencySpec(version, node),
+                            bizDate.toLocalDate()))
+                    .toList();
+            Optional<EvaluationResult> blocked = rootResults.stream()
+                    .filter(result -> !Boolean.TRUE.equals(result.getSatisfied()))
+                    .findFirst();
+            if (blocked.isPresent()) {
+                String reason = blocked.get().getWaitingReason();
+                triggerHistoryService.recordSkippedTrigger(
+                        triggerKey,
+                        TRIGGER_TYPE,
+                        assetKey,
+                        snapshotId,
+                        reason);
+                FlowPlanTriggerOutcome outcome = FlowPlanTriggerOutcome.skipped(version, triggerKey, reason);
+                recordDecision(outcome, assetKey, snapshotId, startedAt);
+                return outcome;
+            }
+
+            EvaluationResult evaluation = EvaluationResult.builder()
+                    .satisfied(true)
+                    .assetKey(assetKey)
+                    .snapshotId(snapshotId)
+                    .description("All FlowPlan root snapshot dependencies satisfied")
+                    .evaluatedAt(System.currentTimeMillis())
+                    .build();
+            WorkflowInstance workflow = workflowInstanceService.createInstance(
+                    version.getFlowCode(),
+                    version.getVersion(),
+                    bizDate,
+                    TRIGGER_TYPE,
                     triggerKey,
-                    TRIGGER_TYPE,
-                    assetKey,
-                    snapshotId,
-                    reason);
-            return FlowPlanTriggerOutcome.skipped(version, triggerKey, reason);
+                    evaluation.getDescription(),
+                    version.getId());
+            Set<String> rootCodes = roots.stream().map(ScheduleNode::getNodeCode).collect(Collectors.toSet());
+            List<TaskInstance> tasks = emitTasks(version, workflow, nodes, rootCodes, bizDate.toLocalDate());
+            workflowInstanceService.markSchedulable(workflow.getId());
+            triggerHistoryService.recordWorkflowTrigger(triggerKey, TRIGGER_TYPE, evaluation, workflow.getId());
+            if (!tasks.isEmpty()) {
+                triggerHistoryService.recordTaskTrigger(
+                        triggerKey + ":first-task",
+                        TRIGGER_TYPE,
+                        evaluation,
+                        tasks.get(0).getId());
+            }
+            FlowPlanTriggerOutcome outcome = FlowPlanTriggerOutcome.emitted(
+                    version,
+                    triggerKey,
+                    workflow.getId(),
+                    tasks.isEmpty() ? null : tasks.get(0).getId());
+            recordDecision(outcome, assetKey, snapshotId, startedAt);
+            return outcome;
+        } catch (RuntimeException e) {
+            flowPlanDecisionMetrics.recordDecision(
+                    FlowPlanTriggerDecision.FAILED,
+                    Duration.ofNanos(System.nanoTime() - startedAt));
+            log.error(
+                    "FlowPlan trigger decision=FAILED flowPlanVersionId={} flowCode={} assetKey={} "
+                            + "snapshotId={} triggerKey={} reason={}",
+                    version.getId(), version.getFlowCode(), assetKey, snapshotId, triggerKey, e.getMessage(), e);
+            throw e;
         }
+    }
 
-        EvaluationResult evaluation = EvaluationResult.builder()
-                .satisfied(true)
-                .assetKey(assetKey)
-                .snapshotId(snapshotId)
-                .description("All FlowPlan root snapshot dependencies satisfied")
-                .evaluatedAt(System.currentTimeMillis())
-                .build();
-        WorkflowInstance workflow = workflowInstanceService.createInstance(
-                version.getFlowCode(),
-                version.getVersion(),
-                bizDate,
-                TRIGGER_TYPE,
-                triggerKey,
-                evaluation.getDescription(),
-                version.getId());
-        Set<String> rootCodes = roots.stream().map(ScheduleNode::getNodeCode).collect(Collectors.toSet());
-        List<TaskInstance> tasks = emitTasks(version, workflow, nodes, rootCodes, bizDate.toLocalDate());
-        workflowInstanceService.markSchedulable(workflow.getId());
-        triggerHistoryService.recordWorkflowTrigger(triggerKey, TRIGGER_TYPE, evaluation, workflow.getId());
-        if (!tasks.isEmpty()) {
-            triggerHistoryService.recordTaskTrigger(
-                    triggerKey + ":first-task",
-                    TRIGGER_TYPE,
-                    evaluation,
-                    tasks.get(0).getId());
-        }
-        return FlowPlanTriggerOutcome.emitted(
-                version,
-                triggerKey,
-                workflow.getId(),
-                tasks.isEmpty() ? null : tasks.get(0).getId());
+    /** Record bounded metrics and high-cardinality structured evidence for one trigger decision. */
+    private void recordDecision(
+            FlowPlanTriggerOutcome outcome,
+            String assetKey,
+            String snapshotId,
+            long startedAt) {
+        flowPlanDecisionMetrics.recordDecision(
+                outcome.decision(),
+                Duration.ofNanos(System.nanoTime() - startedAt));
+        log.info(
+                "FlowPlan trigger decision={} flowPlanVersionId={} flowCode={} assetKey={} snapshotId={} "
+                        + "triggerKey={} workflowInstanceId={} reason={}",
+                outcome.decision(), outcome.flowPlanVersionId(), outcome.flowCode(), assetKey, snapshotId,
+                outcome.triggerKey(), outcome.workflowInstanceId(), outcome.reason());
     }
 
     /**
@@ -338,6 +382,7 @@ public class FlowPlanEvaluationService {
      * @param workflowInstanceId emitted or existing workflow instance id
      * @param firstTaskInstanceId first emitted task id for trace convenience
      * @param reason decision reason
+     * @param decision bounded result used for metrics and structured logs
      */
     public record FlowPlanTriggerOutcome(
             Long flowPlanVersionId,
@@ -346,7 +391,8 @@ public class FlowPlanEvaluationService {
             boolean schedulingIntentEmitted,
             Long workflowInstanceId,
             Long firstTaskInstanceId,
-            String reason) {
+            String reason,
+            FlowPlanTriggerDecision decision) {
 
         /**
          * Build an emitted outcome.
@@ -369,7 +415,8 @@ public class FlowPlanEvaluationService {
                     true,
                     workflowInstanceId,
                     firstTaskInstanceId,
-                    "FlowPlan DAG scheduling intents emitted");
+                    "FlowPlan DAG scheduling intents emitted",
+                    FlowPlanTriggerDecision.EMITTED);
         }
 
         /**
@@ -385,7 +432,8 @@ public class FlowPlanEvaluationService {
                 String triggerKey,
                 String reason) {
             return new FlowPlanTriggerOutcome(
-                    version.getId(), version.getFlowCode(), triggerKey, false, null, null, reason);
+                    version.getId(), version.getFlowCode(), triggerKey, false, null, null, reason,
+                    FlowPlanTriggerDecision.BLOCKED_CONDITION);
         }
 
         /**
@@ -407,7 +455,8 @@ public class FlowPlanEvaluationService {
                     false,
                     workflowInstanceId,
                     null,
-                    "Trigger already recorded");
+                    "Trigger already recorded",
+                    FlowPlanTriggerDecision.DEDUPLICATED);
         }
     }
 }

@@ -396,6 +396,10 @@ live source range
 
 对账指标记录 source lag、retention gap 和投影一致性；delivery 指标记录 publisher 尝试、耗时和各 channel/status 记录数。所有这些都是调度观察与传输证据，不参与 task 成功失败判断。
 
+### 调度决策可观测性
+
+`FlowPlanDecisionMetrics` 将自然 snapshot 触发拆成两层低基数指标：发布版本检查结果为 `TRIGGER_POLICY_FILTERED` / `ASSET_UNMATCHED` / `MATCHED`，匹配后的决策结果为 `EMITTED` / `BLOCKED_CONDITION` / `DEDUPLICATED` / `FAILED`，并记录决策耗时。`SchedulingBacklogMetrics` 通过分组查询统计固定的 task 非终态等待阶段，以及补数 `DATE_CONCURRENCY` / `DAG_DEPENDENCY` 阻塞类别。Flow code、asset key、snapshot id、trigger key、workflow id 和自由文本原因不进入 metric tag，而是写入结构化决策日志；已提交的高维审计事实仍以 `TriggerHistory` 为准。这里记录的是调度评估尝试和调度侧积压，不是下游运行结果，也不能替代 target snapshot 确认。
+
 ### 触发与发布幂等
 
 FlowPlan trigger 使用稳定 `trigger_key`；task intent 使用 `task_instance_id` 唯一约束和稳定 `intent_key`，并在事务内按 batch、受限 FlowPlanVersion、workflow、task、target-admission 顺序加锁。只有配置有限 `maxActiveInstances` 时才锁版本行，以原子完成活跃 workflow 计数和首次 intent 发布；无上限的 `PARALLEL` 不被版本锁串行化。`scheduling_target_admission` 通过 `(target_asset_key, biz_date)` 唯一键和行锁保护首次发布。后续 HTTP/MQ publisher 的 lease 只允许存在于 `SchedulingIntentDelivery` 基础设施模型，不能进入 `TaskInstance` 或参与 snapshot 结果判断。
@@ -404,8 +408,8 @@ FlowPlan trigger 使用稳定 `trigger_key`；task intent 使用 `task_instance_
 
 推荐按以下顺序推进：
 
-1. Flow 隔离：以 Flow 为授权和配额边界，owner/space 只作归属元数据，身份必须来自可信认证适配层。
-2. 观测性：继续为条件阻塞和触发决策增加指标与结构化日志。
-3. MQ 部署：选定实际消息产品后实现 broker gateway。
+1. 策略控制：明确丢弃审计与优先级排序语义后，实现 `SERIAL_DISCARD` / `SERIAL_PRIORITY` 和 dedupe window。
+2. MQ 部署：选定实际消息产品后实现 broker gateway。
+3. Flow 隔离：可信身份和 Flow 级 RBAC 按当前决策后移，owner/space 继续只作归属元数据。
 4. 查询展示：Flow/Node 聚合、稳定游标和 Web 运维视图按当前决策后移。
 5. 整体 Testcontainers E2E 与 Iceberg/Hudi source adapter 按当前阶段决策暂缓。

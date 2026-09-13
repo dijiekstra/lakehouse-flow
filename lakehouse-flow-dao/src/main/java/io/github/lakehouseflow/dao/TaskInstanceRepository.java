@@ -50,6 +50,20 @@ public interface TaskInstanceRepository extends JpaRepository<TaskInstance, Long
     List<TaskInstance> findByStateOrderByCreatedAtAsc(String state);
 
     /**
+     * Count non-terminal task scheduling instances by their stable scheduler state.
+     *
+     * @return one grouped count for each currently present non-terminal state
+     */
+    @Query("SELECT t.state AS state, COUNT(t.id) AS instanceCount " +
+           "FROM TaskInstance t " +
+           "WHERE t.state IN ('" + SchedulingStates.CREATED + "', '" +
+           SchedulingStates.WAITING_SNAPSHOT + "', '" +
+           SchedulingStates.READY_TO_SCHEDULE + "', '" +
+           SchedulingStates.SCHEDULED + "') " +
+           "GROUP BY t.state")
+    List<TaskInstanceStateCount> countNonTerminalByState();
+
+    /**
      * Find ready task decisions whose parent workflow still allows publication.
      *
      * @return publishable task decisions in deterministic creation order

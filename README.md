@@ -169,14 +169,24 @@ lakehouse-flow:
 
 HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接受。publisher 采用至少一次投递，`intentKey` 是下游启动幂等键。超过 `publicationAdmission.leaseExpiresAt` 的意图不再向外发布并进入传输死信，但 task 的最终判断仍只取决于是否出现可归属的目标 snapshot。
 
-投递与 snapshot source 可观测性通过 Actuator 暴露：
+调度决策、投递与 snapshot source 可观测性通过 Actuator 暴露：
 
 ```bash
 curl http://localhost:8080/actuator/prometheus
 curl 'http://localhost:8080/api/v1/scheduling-intent-deliveries/dead-letters?channel=MQ&limit=100'
 ```
 
-核心指标包括 `lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempt_duration_seconds`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
+核心指标包括 `lakehouse_flow_scheduling_decision_plan_inspections_total`、`lakehouse_flow_scheduling_decision_trigger_evaluations_total`、`lakehouse_flow_scheduling_decision_trigger_evaluation_duration_seconds`、`lakehouse_flow_scheduling_backlog_task_instances`、`lakehouse_flow_scheduling_backlog_backfill_blocked_items`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。调度决策 metric 只使用检查/决策结果等低基数 tag，Flow、asset、snapshot 和 trigger 标识留在结构化日志与 `TriggerHistory`。task backlog 只统计 `CREATED`、`WAITING_SNAPSHOT`、`READY_TO_SCHEDULE`、`SCHEDULED` 四个非终态，其中 `SCHEDULED` 表示意图已发布并等待目标 snapshot；补数阻塞只使用 `DATE_CONCURRENCY` 和 `DAG_DEPENDENCY`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
+
+Prometheus 初始告警基线如下，投产后应按扫描周期、Flow 数量和确认窗口校准：
+
+1. P1：5 分钟内 `decision="failed"` 增量大于 0，表示调度评估事务失败关闭。
+2. P1：`retention_gap` 或 `projection_inconsistent` 连续 5 分钟大于 0，表示 source 事实或 AssetState 投影不可信。
+3. P2：任一 `status="EXHAUSTED"` delivery 连续 15 分钟大于 0，表示调度意图已进入传输死信。
+4. P2：`state="READY_TO_SCHEDULE"` backlog 连续 15 分钟大于 0，优先检查 publisher、版本并发上限和目标日期准入。
+5. P2：`state="SCHEDULED"` backlog 连续超过确认超时的 75% 仍大于 0；默认 `PT1H` 下可先取 45 分钟，检查下游提交及 snapshot source。
+
+`BLOCKED_CONDITION`、`DATE_CONCURRENCY` 和 `DAG_DEPENDENCY` 在正常调度中可以非零，默认只用于趋势和排障，不以单次出现报警。它们持续增长时，应结合部署容量与 Flow SLO 设置绝对值或增长率阈值。
 
 source reconciliation 周期性核对湖表 earliest/latest、durable offset、最新物理事件/状态和最新业务数据事件/状态。`UNINITIALIZED` / `LAGGING` 通过正常连续摄入补偿；物理或数据投影缺失/漂移时重放对应 durable event；`RETENTION_GAP`、`OFFSET_AHEAD`、durable offset 缺少事件或无事件支撑的状态等情况进入 `BLOCKED` 并告警，不允许自动跨越历史或构造 snapshot。
 
