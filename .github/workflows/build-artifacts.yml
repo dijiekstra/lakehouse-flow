@@ -67,6 +67,16 @@ jobs:
             echo "Verification: ./mvnw clean verify"
           } > build-info/BUILD_INFO.txt
 
+      - name: Verify executable Boot JAR
+        shell: bash
+        run: |
+          BOOT_JAR=$(find lakehouse-flow-boot/target -maxdepth 1 -name '*.jar' ! -name '*.original' -print -quit)
+          test -n "$BOOT_JAR"
+          unzip -p "$BOOT_JAR" META-INF/MANIFEST.MF | grep -q '^Main-Class: org.springframework.boot.loader.launch.JarLauncher'
+          unzip -p "$BOOT_JAR" META-INF/MANIFEST.MF | grep -q '^Start-Class: io.github.lakehouseflow.LakehouseFlowApplication'
+          jar tf "$BOOT_JAR" > lakehouse-flow-boot/target/boot-jar-contents.txt
+          grep -q '^BOOT-INF/lib/' lakehouse-flow-boot/target/boot-jar-contents.txt
+
       - name: Upload Boot artifact
         uses: actions/upload-artifact@v7
         with:

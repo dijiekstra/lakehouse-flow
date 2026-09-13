@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           test -x ./mvnw
-          if grep -R -nE 'run:[[:space:]]*mvn([[:space:]]|$)' .github/workflows; then
+          if grep -R -nE '^[[:space:]]*(run:[[:space:]]*)?mvn([[:space:]]|$)' .github/workflows; then
             echo "Use ./mvnw for every workflow Maven invocation."
             exit 1
           fi
