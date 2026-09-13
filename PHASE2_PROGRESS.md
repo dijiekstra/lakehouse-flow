@@ -249,7 +249,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 6. `.mavenrc` 只在 macOS 探测 JDK 17，并在 Linux/CI 保留 `setup-java` 提供的 `JAVA_HOME`，消除 Wrapper 的平台耦合。
 7. Boot 模块显式执行 Spring Boot `repackage`；Artifact workflow 在上传前校验 `JarLauncher`、应用 `Start-Class` 和 `BOOT-INF/lib`，拒绝只有几 KB 的不可执行薄 JAR。
 
-退出标准：本地 `./mvnw clean verify` 通过覆盖率门槛，默认分支三条 workflow 真实运行成功。远端运行结果在本次提交推送后核验。
+退出标准已达到（2026-09-13）：本地 `./mvnw clean verify` 通过覆盖率门槛；默认分支 `Code Quality Checks`、`Maven Build and Test`、`Build Artifacts` 三条 workflow 均真实运行成功；上传前的可执行 JAR 校验通过，远端 artifact 压缩包为 98,078,717 bytes。
 
 ## 最近完成推进项
 
