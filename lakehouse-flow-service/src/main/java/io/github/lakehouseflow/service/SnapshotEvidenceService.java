@@ -12,10 +12,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * Matches target snapshots to immutable Lakehouse Flow scheduling intents.
@@ -28,8 +26,6 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 public class SnapshotEvidenceService {
-
-    private static final Set<String> LEGACY_DATA_COMMIT_KINDS = Set.of("APPEND", "OVERWRITE");
 
     private final LakehouseEventRepository lakehouseEventRepository;
 
@@ -140,15 +136,7 @@ public class SnapshotEvidenceService {
      * @return true when its source adapter classified it as target data output
      */
     private boolean isAcceptedDataCommit(LakehouseEvent event) {
-        Map<String, Object> payload = event.getPayloadJson();
-        if (payload != null && payload.containsKey(SnapshotEvidenceContract.DATA_CHANGE_FIELD)) {
-            return Boolean.TRUE.equals(payload.get(SnapshotEvidenceContract.DATA_CHANGE_FIELD));
-        }
-        if (isBlank(event.getCommitKind())) {
-            return false;
-        }
-        return LEGACY_DATA_COMMIT_KINDS.contains(
-                event.getCommitKind().trim().toUpperCase(Locale.ROOT));
+        return SnapshotEventChangeClassifier.isDataChange(event);
     }
 
     /**

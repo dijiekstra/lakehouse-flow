@@ -18,6 +18,8 @@ import java.time.LocalDateTime;
  * @param latestSourceSnapshotId normalized latest source snapshot coordinate, or null
  * @param latestEventSnapshotId latest durable event snapshot coordinate, or null
  * @param assetStateSnapshotId table-level AssetState snapshot coordinate, or null
+ * @param latestDataEventSnapshotId latest durable business-data event coordinate, or null
+ * @param assetStateDataSnapshotId table-level AssetState business-data coordinate, or null
  * @param pendingOffsetCount source offsets awaiting ingestion, or null when unknown
  * @param repairAttempted whether this pass attempted bounded compensation
  * @param repairedEventCount number of newly inserted events during compensation
@@ -35,6 +37,8 @@ public record SnapshotSourceReconciliation(
         String latestSourceSnapshotId,
         String latestEventSnapshotId,
         String assetStateSnapshotId,
+        String latestDataEventSnapshotId,
+        String assetStateDataSnapshotId,
         Long pendingOffsetCount,
         boolean repairAttempted,
         int repairedEventCount,

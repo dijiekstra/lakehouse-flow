@@ -122,6 +122,30 @@ class FlowPlanPolicyServiceTest {
                 () -> flowPlanPolicyService.validateVersionPolicies(version, List.of(node(Map.of()))));
     }
 
+    /** Verify publication rejects priority until scheduler queue ordering is implemented. */
+    @Test
+    void validateVersionPoliciesRejectsUnsupportedPriority() {
+        FlowPlanVersion version = version(
+                Map.of(),
+                Map.of("mode", "PARALLEL", "priority", 10));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> flowPlanPolicyService.validateVersionPolicies(version, List.of(node(Map.of()))));
+    }
+
+    /** Verify publication rejects dedupe windows instead of silently losing later snapshot triggers. */
+    @Test
+    void validateVersionPoliciesRejectsUnsupportedDedupeWindow() {
+        FlowPlanVersion version = version(
+                Map.of(),
+                Map.of("mode", "PARALLEL", "dedupeWindow", "PT5M"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> flowPlanPolicyService.validateVersionPolicies(version, List.of(node(Map.of()))));
+    }
+
     /** Verify malformed duration text fails before a version becomes immutable. */
     @Test
     void validateVersionPoliciesRejectsMalformedTimeout() {

@@ -11,8 +11,9 @@ import java.time.LocalDateTime;
 /**
  * Current scheduling truth of a data asset (table or partition).
  *
- * Asset state is updated monotonically:
- * - Newer snapshots/watermarks overwrite older ones
+ * Asset state is updated monotonically on two independent tracks:
+ * - Observed snapshot fields include data and maintenance commits
+ * - Data snapshot fields include only adapter-classified business-data commits
  * - Version is used for optimistic locking
  * - Quality and schema status track readiness
  *
@@ -66,10 +67,18 @@ public class AssetState {
     private String partitionName;
 
     /**
-     * Latest snapshot ID observed (monotonically increasing)
+     * Latest physical snapshot ID observed, including maintenance commits.
      */
     @Column(name = "latest_snapshot_id", length = 255)
     private String latestSnapshotId;
+
+    /**
+     * Latest snapshot ID classified as a business-data change.
+     *
+     * <p>Dependency evaluation reads this coordinate so compaction cannot satisfy data readiness.
+     */
+    @Column(name = "latest_data_snapshot_id", length = 255)
+    private String latestDataSnapshotId;
 
     /**
      * Latest schema ID observed
@@ -84,10 +93,22 @@ public class AssetState {
     private LocalDateTime latestWatermark;
 
     /**
+     * Latest event-time watermark carried by a business-data snapshot.
+     */
+    @Column(name = "latest_data_watermark")
+    private LocalDateTime latestDataWatermark;
+
+    /**
      * When the latest snapshot was committed
      */
     @Column(name = "latest_commit_time")
     private LocalDateTime latestCommitTime;
+
+    /**
+     * Commit time of the latest business-data snapshot.
+     */
+    @Column(name = "latest_data_commit_time")
+    private LocalDateTime latestDataCommitTime;
 
     /**
      * Quality check result: PASSED, WARNING, FAILED, UNKNOWN

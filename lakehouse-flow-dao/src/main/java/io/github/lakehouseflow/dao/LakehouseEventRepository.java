@@ -78,6 +78,28 @@ public interface LakehouseEventRepository extends JpaRepository<LakehouseEvent, 
             @Param("tableName") String tableName);
 
     /**
+     * Find the latest typed business-data event for one configured physical table.
+     *
+     * @param sourceType lakehouse format or source type
+     * @param catalogName logical catalog name
+     * @param databaseName logical database or schema name
+     * @param tableName logical table name
+     * @return latest data-changing event by ingestion order
+     */
+    @Query("SELECT e FROM LakehouseEvent e " +
+           "WHERE e.sourceType = :sourceType " +
+           "AND e.catalogName = :catalogName " +
+           "AND e.databaseName = :databaseName " +
+           "AND e.tableName = :tableName " +
+           "AND e.dataChange = true " +
+           "ORDER BY e.observedAt DESC, e.id DESC LIMIT 1")
+    Optional<LakehouseEvent> findLatestDataSourceEvent(
+            @Param("sourceType") String sourceType,
+            @Param("catalogName") String catalogName,
+            @Param("databaseName") String databaseName,
+            @Param("tableName") String tableName);
+
+    /**
      * Find events since a specific time for a source
      */
     List<LakehouseEvent> findBySourceTypeAndObservedAtGreaterThanOrderByObservedAtAsc(

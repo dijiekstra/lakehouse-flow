@@ -23,7 +23,8 @@ import java.util.Map;
     indexes = {
         @Index(name = "idx_event_id", columnList = "event_id", unique = true),
         @Index(name = "idx_asset_snapshot", columnList = "catalog_name,database_name,table_name,partition_name,snapshot_id"),
-        @Index(name = "idx_source_time", columnList = "source_type,observed_at DESC")
+        @Index(name = "idx_source_time", columnList = "source_type,observed_at DESC"),
+        @Index(name = "idx_lakehouse_event_source_data", columnList = "source_type,catalog_name,database_name,table_name,data_change,observed_at DESC,id DESC")
     }
 )
 @Data
@@ -105,6 +106,15 @@ public class LakehouseEvent {
      */
     @Column(name = "commit_kind", length = 50)
     private String commitKind;
+
+    /**
+     * Format-neutral classification of whether this snapshot changes business data.
+     *
+     * <p>The source adapter owns this classification. Maintenance snapshots such as compaction and
+     * analyze remain durable events but must store {@code false} here.
+     */
+    @Column(name = "data_change")
+    private Boolean dataChange;
 
     /**
      * When this snapshot was committed

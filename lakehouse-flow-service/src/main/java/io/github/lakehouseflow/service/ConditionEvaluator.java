@@ -16,9 +16,9 @@ import java.util.Optional;
  * Condition Evaluator - Evaluates dependency conditions for workflows.
  *
  * Supported condition types:
- * - SNAPSHOT_EXISTS: Asset has any snapshot
- * - SNAPSHOT_ID_GTE: Latest snapshot ID >= required value
- * - WATERMARK_GTE: Latest watermark >= required time
+ * - SNAPSHOT_EXISTS: Asset has a business-data snapshot
+ * - SNAPSHOT_ID_GTE: Latest business-data snapshot ID >= required value
+ * - WATERMARK_GTE: Latest business-data watermark >= required time
  * - QUALITY_PASSED: Quality status is PASSED
  * - SCHEMA_COMPATIBLE: Schema status is COMPATIBLE
  *
@@ -71,13 +71,13 @@ public class ConditionEvaluator {
                     "Asset has no snapshot yet");
         }
 
-        if (state.get().getLatestSnapshotId() == null) {
+        if (state.get().getLatestDataSnapshotId() == null) {
             return EvaluationResult.unsatisfied(
-                    "Asset " + assetKey + " has no snapshot",
-                    "Asset state exists but latestSnapshotId is null");
+                    "Asset " + assetKey + " has no data snapshot",
+                    "Asset state exists but latestDataSnapshotId is null");
         }
 
-        String snapshotId = state.get().getLatestSnapshotId();
+        String snapshotId = state.get().getLatestDataSnapshotId();
         return EvaluationResult.builder()
                 .satisfied(true)
                 .description("Snapshot " + snapshotId + " exists")
@@ -94,13 +94,13 @@ public class ConditionEvaluator {
     private EvaluationResult checkSnapshotIdGte(String assetKey, String requiredValue) {
         Optional<AssetState> state = assetStateRepository.findByAssetKey(assetKey);
 
-        if (state.isEmpty() || state.get().getLatestSnapshotId() == null) {
+        if (state.isEmpty() || state.get().getLatestDataSnapshotId() == null) {
             return EvaluationResult.unsatisfied(
                     "Waiting for snapshot >= " + requiredValue + " (asset not found)",
                     "Asset " + assetKey + " has no snapshot");
         }
 
-        String currentSnapshotId = state.get().getLatestSnapshotId();
+        String currentSnapshotId = state.get().getLatestDataSnapshotId();
 
         if (SnapshotIds.isGreaterThanOrEqual(currentSnapshotId, requiredValue)) {
             return EvaluationResult.builder()
@@ -124,13 +124,13 @@ public class ConditionEvaluator {
     private EvaluationResult checkWatermarkGte(String assetKey, String requiredWatermarkStr) {
         Optional<AssetState> state = assetStateRepository.findByAssetKey(assetKey);
 
-        if (state.isEmpty() || state.get().getLatestWatermark() == null) {
+        if (state.isEmpty() || state.get().getLatestDataWatermark() == null) {
             return EvaluationResult.unsatisfied(
                     "Waiting for watermark >= " + requiredWatermarkStr + " (asset not found)",
                     "Asset " + assetKey + " has no watermark");
         }
 
-        LocalDateTime currentWatermark = state.get().getLatestWatermark();
+        LocalDateTime currentWatermark = state.get().getLatestDataWatermark();
 
         try {
             LocalDateTime requiredWatermark = LocalDateTime.parse(requiredWatermarkStr, ISO_FORMATTER);

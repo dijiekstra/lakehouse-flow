@@ -189,8 +189,10 @@ Lakehouse Flow 参考的 action 只有这些：
 关键字段：
 
 - `assetId`
-- `latestSnapshotId`
-- `latestWatermark`
+- `latestSnapshotId`: 最新物理 snapshot，包含维护提交
+- `latestDataSnapshotId`: 最新业务数据 snapshot
+- `latestWatermark`, `latestCommitTime`: 最新物理观察事实
+- `latestDataWatermark`, `latestDataCommitTime`: 最新业务数据事实
 - `qualityStatus`
 - `schemaStatus`
 - `readinessStatus`
@@ -199,6 +201,8 @@ Lakehouse Flow 参考的 action 只有这些：
 原则：
 
 - 单调推进，不回退。
+- 物理观察轨供 source 连续性、baseline 和运维使用；业务数据轨供依赖判断使用。
+- `COMPACT` / `ANALYZE` 不推进业务数据轨，也不创建或推进分区状态。
 - snapshot ID 比较统一走 `SnapshotIds`。
 - 旧事件只能成为审计证据，不能覆盖新状态。
 
@@ -319,7 +323,7 @@ Lakehouse Flow 参考的 action 只有这些：
 - `timeout`: ISO-8601 Duration；节点策略覆盖版本策略，旧字段名 `confirmationTimeout` 只作兼容读取
 - `staleAction`: 当前仅支持 `MARK_NOT_ADVANCED`
 
-这是 Lakehouse Flow 和传统执行调度器最不同的地方：结果不来自任务状态，而来自可归属于当前调度意图的 output asset snapshot 推进。任何外部写入或维护 snapshot 都可以推进 `AssetState`，但不能替代当前 intent 的结果证据。
+这是 Lakehouse Flow 和传统执行调度器最不同的地方：结果不来自任务状态，而来自可归属于当前调度意图的 output asset 数据 snapshot 推进。任何物理提交都可以推进观察轨，但维护 snapshot 不能推进业务数据轨，更不能替代当前 intent 的结果证据。
 
 #### TriggerPolicy
 
@@ -821,7 +825,7 @@ Lakehouse Flow 的暂停/取消只作用于调度层。
 | --- | --- | --- |
 | `LakehouseEvent` | `SnapshotObservation` | 可以先保留类名，文档中明确事件是证据 |
 | `AssetState` | `AssetState` | 保留 |
-| `AssetDependency` | `DependencySpec` | 后续从单表条件演进为可组合 DSL |
+| `FlowPlanVersion.dependencySpecJson` / `ScheduleNode.inputDependencySpecJson` | `DependencySpec` | 已统一为发布版本内的可组合 DSL，不再保留单表依赖运行时路径 |
 | `WorkflowDefinition` | `FlowPlan` | 建议重命名或至少重新定义语义 |
 | `TaskDefinition` | `ScheduleNode` | 节点定义，不包含执行器 |
 | `WorkflowInstance` | `ScheduleInstance` | 建议重命名，避免执行语义 |

@@ -141,6 +141,7 @@ public class FlowPlanPolicyService {
                 : safeMap(node.getConfirmationPolicyJson());
         Map<String, Object> concurrency = safeMap(version.getConcurrencyPolicyJson());
 
+        validateUnsupportedConcurrencyFields(concurrency);
         Duration confirmationTimeout = readDuration(
                 nodeConfirmation,
                 versionConfirmation,
@@ -167,6 +168,17 @@ public class FlowPlanPolicyService {
                 targetAdmissionLease,
                 concurrencyMode,
                 maxActiveInstances);
+    }
+
+    /** Reject declared concurrency controls whose scheduling semantics are not implemented. */
+    private void validateUnsupportedConcurrencyFields(Map<String, Object> concurrencyPolicy) {
+        for (String field : List.of("priority", "dedupeWindow")) {
+            if (concurrencyPolicy.containsKey(field)) {
+                throw new IllegalArgumentException(
+                        "Unsupported concurrency policy field: " + field
+                                + "; remove it until its scheduling and audit semantics are implemented");
+            }
+        }
     }
 
     /** Read the supported concurrency mode and reject unimplemented queue semantics. */

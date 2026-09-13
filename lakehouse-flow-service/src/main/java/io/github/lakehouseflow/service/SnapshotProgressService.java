@@ -31,7 +31,7 @@ public class SnapshotProgressService {
      *
      * @param targetAssetKey target asset to inspect
      * @param baselineSnapshotId snapshot observed before scheduling; blank means any target snapshot is progress
-     * @return satisfied when the latest target snapshot is greater than baselineSnapshotId
+     * @return satisfied when the latest business-data snapshot is greater than baselineSnapshotId
      */
     @Transactional(readOnly = true)
     public EvaluationResult evaluateProgress(String targetAssetKey, String baselineSnapshotId) {
@@ -52,13 +52,13 @@ public class SnapshotProgressService {
                     .build();
         }
 
-        String observedSnapshotId = state.get().getLatestSnapshotId();
-        if (isBlank(observedSnapshotId)) {
+        String dataSnapshotId = state.get().getLatestDataSnapshotId();
+        if (isBlank(dataSnapshotId)) {
             return EvaluationResult.builder()
                     .satisfied(false)
                     .assetKey(targetAssetKey)
-                    .waitingReason("Waiting for target snapshot to advance (no snapshot yet)")
-                    .description("Target AssetState exists but latestSnapshotId is empty")
+                    .waitingReason("Waiting for target data snapshot to advance (no data snapshot yet)")
+                    .description("Target AssetState exists but latestDataSnapshotId is empty")
                     .evaluatedAt(System.currentTimeMillis())
                     .build();
         }
@@ -67,18 +67,18 @@ public class SnapshotProgressService {
             return EvaluationResult.builder()
                     .satisfied(true)
                     .assetKey(targetAssetKey)
-                    .snapshotId(observedSnapshotId)
-                    .description("Target snapshot " + observedSnapshotId + " exists with no previous baseline")
+                    .snapshotId(dataSnapshotId)
+                    .description("Target data snapshot " + dataSnapshotId + " exists with no previous baseline")
                     .evaluatedAt(System.currentTimeMillis())
                     .build();
         }
 
-        if (SnapshotIds.isAfter(observedSnapshotId, baselineSnapshotId)) {
+        if (SnapshotIds.isAfter(dataSnapshotId, baselineSnapshotId)) {
             return EvaluationResult.builder()
                     .satisfied(true)
                     .assetKey(targetAssetKey)
-                    .snapshotId(observedSnapshotId)
-                    .description("Target snapshot advanced from " + baselineSnapshotId + " to " + observedSnapshotId)
+                    .snapshotId(dataSnapshotId)
+                    .description("Target data snapshot advanced from " + baselineSnapshotId + " to " + dataSnapshotId)
                     .evaluatedAt(System.currentTimeMillis())
                     .build();
         }
@@ -86,19 +86,21 @@ public class SnapshotProgressService {
         return EvaluationResult.builder()
                 .satisfied(false)
                 .assetKey(targetAssetKey)
-                .snapshotId(observedSnapshotId)
-                .waitingReason("Waiting for target snapshot > " + baselineSnapshotId
-                        + " (current: " + observedSnapshotId + ")")
-                .description("Target snapshot has not advanced beyond baseline")
+                .snapshotId(dataSnapshotId)
+                .waitingReason("Waiting for target data snapshot > " + baselineSnapshotId
+                        + " (current: " + dataSnapshotId + ")")
+                .description("Target data snapshot has not advanced beyond the observed baseline")
                 .evaluatedAt(System.currentTimeMillis())
                 .build();
     }
 
     /**
-     * Read the latest known snapshot for a target asset.
+     * Read the latest physically observed snapshot for a target asset.
      *
      * This is used to capture a baseline before Lakehouse Flow emits a
-     * scheduling intent. The value is evidence only; missing state simply means
+     * scheduling intent. Maintenance commits intentionally participate in this
+     * baseline so a confirming data snapshot must be published afterward. The
+     * value is evidence only; missing state simply means
      * the first future target snapshot can confirm progress.
      */
     @Transactional(readOnly = true)

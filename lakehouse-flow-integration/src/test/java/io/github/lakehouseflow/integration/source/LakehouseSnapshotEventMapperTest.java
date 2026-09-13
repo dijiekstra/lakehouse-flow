@@ -38,6 +38,7 @@ class LakehouseSnapshotEventMapperTest {
         assertEquals("HUDI:prod:sales:orders:20260913120000", event.getEventId());
         assertEquals("HUDI", event.getSourceType());
         assertEquals("schema-v2", event.getSchemaId());
+        assertEquals(true, event.getDataChange());
         assertEquals(true, event.getPayloadJson().get("dataChange"));
         assertEquals(snapshot.snapshotProperties(), event.getPayloadJson().get("snapshotProperties"));
         assertEquals(snapshot.changedPartitions(), event.getPayloadJson().get("changedPartitions"));

@@ -75,7 +75,7 @@ lakehouse-flow-common       shared helpers
 lakehouse-flow-model        JPA entities and value objects
 lakehouse-flow-dao          repositories and Flyway schema migrations
 lakehouse-flow-service      domain services
-lakehouse-flow-integration  mock Paimon ingestion
+lakehouse-flow-integration  lakehouse snapshot source SPI and adapters
 lakehouse-flow-api          FlowPlan/Node、action、instance、intent、backfill query REST API
 lakehouse-flow-scheduler    snapshot 确认扫描循环
 lakehouse-flow-test         shared test placeholder
@@ -85,7 +85,7 @@ lakehouse-flow-boot         Spring Boot application
 ## 开发约束
 
 - `asset_state` 是调度判断事实来源，事件只是证据。
-- `AssetDependency.dependencyConditions` 是当前依赖 DSL 的第一版入口，支持 `AND/OR` 和 `conditions[]`。
+- 依赖 DSL 只从发布的 `FlowPlanVersion.dependencySpecJson` 或 `ScheduleNode.inputDependencySpecJson` 读取，支持 `AND/OR` 分组和 `conditions[]`。
 - Lakehouse Flow 只做调度和 snapshot 结果确认，不提交任务、不跟踪执行器状态、不保存外部 job，也不依赖下游结果反馈。
 - 调度意图必须由 Lakehouse Flow 内部 publisher 主动发布；对外 API 只做审计，不提供 ready/claim/deliver 抢任务协议。
 - snapshot ID 不要直接用字符串字典序比较；统一使用 `SnapshotIds`。
@@ -98,7 +98,7 @@ lakehouse-flow-boot         Spring Boot application
 ## 推荐下一步
 
 1. 增强 scheduling intent 主动投递：HTTP/MQ publisher、内部投递 lease、退避重试和死信审计。
-2. 将常规 snapshot 触发链路逐步收敛到 `FlowPlanVersion` 和 `ScheduleNode`。
+2. 保持所有常规 snapshot 触发都经过 `FlowPlanVersion` 和 `ScheduleNode`，不要恢复旧的单表依赖触发路径。
 3. 扩展 Flow 实例聚合查询和运维指标；发布版本的确认窗口、目标准入租约和基础活跃实例上限已进入运行时。
 4. 明确 `trigger_key` 生成规则，并为重复触发写数据库约束测试。
 5. 给 `EventIngestionService` 和 `AssetStateService` 增加更贴近数据库的集成测试。

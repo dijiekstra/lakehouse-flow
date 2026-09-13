@@ -94,11 +94,13 @@ public class SnapshotSourceReconciliationService {
                 repairedEvents += eventIngestionService.ingestSource(source);
                 current = inspectSafely(source);
             }
-            if (current.outcome() == SnapshotSourceReconciliationOutcome.REPAIRABLE
-                    && (current.projectionStatus() == SnapshotProjectionStatus.MISSING_ASSET_STATE
-                    || current.projectionStatus() == SnapshotProjectionStatus.DRIFT)) {
+            for (int pass = 0;
+                    pass < 2
+                            && current.outcome() == SnapshotSourceReconciliationOutcome.REPAIRABLE
+                            && isProjectionRepairable(current.projectionStatus());
+                    pass++) {
                 repairAttempted = true;
-                replayLatestProjection(source, current);
+                replayProjection(source, current);
                 current = inspectSafely(source);
             }
         } catch (RuntimeException e) {
@@ -129,10 +131,12 @@ public class SnapshotSourceReconciliationService {
             String durableOffset = offset.map(EventConsumerOffset::getOffsetValue).orElse(null);
             SnapshotSourcePosition position = source.inspectPosition(durableOffset);
             Optional<LakehouseEvent> latestEvent = latestEvent(identity);
+            Optional<LakehouseEvent> latestDataEvent = latestDataEvent(identity);
             Optional<AssetState> assetState = assetStateRepository.findByAssetKey(identity.assetKey());
             SnapshotProjectionStatus projectionStatus = projectionStatus(
                     position,
                     latestEvent.orElse(null),
+                    latestDataEvent.orElse(null),
                     assetState.orElse(null));
             SnapshotSourceReconciliationOutcome outcome = outcome(position.status(), projectionStatus);
             return new SnapshotSourceReconciliation(
@@ -146,6 +150,8 @@ public class SnapshotSourceReconciliationService {
                     position.latestSnapshotId(),
                     latestEvent.map(LakehouseEvent::getSnapshotId).orElse(null),
                     assetState.map(AssetState::getLatestSnapshotId).orElse(null),
+                    latestDataEvent.map(LakehouseEvent::getSnapshotId).orElse(null),
+                    assetState.map(AssetState::getLatestDataSnapshotId).orElse(null),
                     position.pendingOffsetCount(),
                     false,
                     0,
@@ -158,6 +164,8 @@ public class SnapshotSourceReconciliationService {
                     SnapshotSourceReconciliationOutcome.BLOCKED,
                     SnapshotSourceOffsetStatus.ERROR,
                     SnapshotProjectionStatus.ERROR,
+                    null,
+                    null,
                     null,
                     null,
                     null,
@@ -181,10 +189,20 @@ public class SnapshotSourceReconciliationService {
                 identity.tableName());
     }
 
+    /** Find the latest durable typed business-data event for the configured source. */
+    private Optional<LakehouseEvent> latestDataEvent(LakehouseSourceIdentity identity) {
+        return lakehouseEventRepository.findLatestDataSourceEvent(
+                identity.sourceType(),
+                identity.catalogName(),
+                identity.databaseName(),
+                identity.tableName());
+    }
+
     /** Determine whether durable event and table-level AssetState evidence agree. */
     private SnapshotProjectionStatus projectionStatus(
             SnapshotSourcePosition position,
             LakehouseEvent latestEvent,
+            LakehouseEvent latestDataEvent,
             AssetState assetState) {
         if (position.durableOffset() == null) {
             return latestEvent == null && assetState == null
@@ -204,6 +222,17 @@ public class SnapshotSourceReconciliationService {
                 && !same(position.latestSnapshotId(), latestEvent.getSnapshotId())) {
             return SnapshotProjectionStatus.EVENT_OFFSET_MISMATCH;
         }
+        if (latestDataEvent == null) {
+            return assetState.getLatestDataSnapshotId() == null
+                    ? SnapshotProjectionStatus.CONSISTENT
+                    : SnapshotProjectionStatus.ORPHANED_DATA_PROJECTION;
+        }
+        if (assetState.getLatestDataSnapshotId() == null) {
+            return SnapshotProjectionStatus.MISSING_DATA_STATE;
+        }
+        if (!same(latestDataEvent.getSnapshotId(), assetState.getLatestDataSnapshotId())) {
+            return SnapshotProjectionStatus.DATA_DRIFT;
+        }
         return SnapshotProjectionStatus.CONSISTENT;
     }
 
@@ -217,25 +246,30 @@ public class SnapshotSourceReconciliationService {
                 || projectionStatus == SnapshotProjectionStatus.ERROR
                 || projectionStatus == SnapshotProjectionStatus.MISSING_EVENT
                 || projectionStatus == SnapshotProjectionStatus.ORPHANED_PROJECTION
+                || projectionStatus == SnapshotProjectionStatus.ORPHANED_DATA_PROJECTION
                 || projectionStatus == SnapshotProjectionStatus.EVENT_OFFSET_MISMATCH) {
             return SnapshotSourceReconciliationOutcome.BLOCKED;
         }
         if (offsetStatus == SnapshotSourceOffsetStatus.UNINITIALIZED
                 || offsetStatus == SnapshotSourceOffsetStatus.LAGGING
                 || projectionStatus == SnapshotProjectionStatus.MISSING_ASSET_STATE
-                || projectionStatus == SnapshotProjectionStatus.DRIFT) {
+                || projectionStatus == SnapshotProjectionStatus.DRIFT
+                || projectionStatus == SnapshotProjectionStatus.MISSING_DATA_STATE
+                || projectionStatus == SnapshotProjectionStatus.DATA_DRIFT) {
             return SnapshotSourceReconciliationOutcome.REPAIRABLE;
         }
         return SnapshotSourceReconciliationOutcome.HEALTHY;
     }
 
     /** Replay an existing durable event through the atomic projection path. */
-    private void replayLatestProjection(
+    private void replayProjection(
             LakehouseSnapshotSource source,
             SnapshotSourceReconciliation reconciliation) {
         LakehouseSourceIdentity identity = source.identity();
-        LakehouseEvent event = latestEvent(identity)
-                .orElseThrow(() -> new IllegalStateException("Cannot replay a missing source event"));
+        boolean dataProjection = reconciliation.projectionStatus() == SnapshotProjectionStatus.MISSING_DATA_STATE
+                || reconciliation.projectionStatus() == SnapshotProjectionStatus.DATA_DRIFT;
+        LakehouseEvent event = (dataProjection ? latestDataEvent(identity) : latestEvent(identity))
+                .orElseThrow(() -> new IllegalStateException("Cannot replay a missing source projection event"));
         if (reconciliation.durableOffset() == null) {
             throw new IllegalStateException("Cannot replay projection without a durable source offset");
         }
@@ -244,6 +278,14 @@ public class SnapshotSourceReconciliationService {
                 reconciliation.durableOffset(),
                 source.offsetComparator(),
                 event);
+    }
+
+    /** Determine whether one projection inconsistency can be repaired by durable event replay. */
+    private boolean isProjectionRepairable(SnapshotProjectionStatus status) {
+        return status == SnapshotProjectionStatus.MISSING_ASSET_STATE
+                || status == SnapshotProjectionStatus.DRIFT
+                || status == SnapshotProjectionStatus.MISSING_DATA_STATE
+                || status == SnapshotProjectionStatus.DATA_DRIFT;
     }
 
     /** Copy a final inspection result with repair audit evidence. */
@@ -263,6 +305,8 @@ public class SnapshotSourceReconciliationService {
                 source.latestSourceSnapshotId(),
                 source.latestEventSnapshotId(),
                 source.assetStateSnapshotId(),
+                source.latestDataEventSnapshotId(),
+                source.assetStateDataSnapshotId(),
                 source.pendingOffsetCount(),
                 repairAttempted,
                 repairedEvents,

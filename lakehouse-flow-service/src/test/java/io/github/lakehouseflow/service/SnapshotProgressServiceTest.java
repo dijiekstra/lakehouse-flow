@@ -100,17 +100,37 @@ class SnapshotProgressServiceTest {
         assertEquals("100", snapshotId.get());
     }
 
+    /** Verify a compaction after the data baseline cannot satisfy generic data progress. */
+    @Test
+    void ignoresObservedMaintenanceProgressButUsesItAsNextBaseline() {
+        when(assetStateRepository.findByAssetKey("paimon.prod.dwd_orders"))
+                .thenReturn(Optional.of(assetState("paimon.prod.dwd_orders", "101", "100")));
+
+        EvaluationResult result = snapshotProgressService.evaluateProgress("paimon.prod.dwd_orders", "100");
+        Optional<String> baseline = snapshotProgressService.findLatestSnapshotId("paimon.prod.dwd_orders");
+
+        assertFalse(result.getSatisfied());
+        assertEquals("100", result.getSnapshotId());
+        assertEquals("101", baseline.orElseThrow());
+    }
+
     /**
      * Build an AssetState fixture with a supplied latest snapshot.
      */
     private AssetState assetState(String assetKey, String snapshotId) {
+        return assetState(assetKey, snapshotId, snapshotId);
+    }
+
+    /** Build an AssetState fixture with independent observed and data coordinates. */
+    private AssetState assetState(String assetKey, String observedSnapshotId, String dataSnapshotId) {
         return AssetState.builder()
                 .assetKey(assetKey)
                 .assetType("TABLE")
                 .catalogName("paimon")
                 .databaseName("prod")
                 .tableName("dwd_orders")
-                .latestSnapshotId(snapshotId)
+                .latestSnapshotId(observedSnapshotId)
+                .latestDataSnapshotId(dataSnapshotId)
                 .build();
     }
 }

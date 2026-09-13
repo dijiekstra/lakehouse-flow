@@ -21,8 +21,9 @@ import java.util.Set;
  * Service for managing asset state and ensuring monotonic updates.
  *
  * Key responsibility: project table and partition state while ensuring:
- * - Newer snapshots always overwrite older ones
- * - Watermarks move forward monotonically
+ * - Every physical snapshot advances only the observed track
+ * - Only business-data snapshots advance the data track
+ * - Observed and data watermarks move forward monotonically
  * - Schema identity follows the snapshot that established the current table state
  * - Version is incremented for optimistic locking
  */
@@ -64,8 +65,10 @@ public class AssetStateService {
         }
         List<AssetState> states = new ArrayList<>();
         states.add(updateAssetStateForScope(event, null));
-        changedPartitions(event).forEach(partition ->
-                states.add(updateAssetStateForScope(event, partition)));
+        if (SnapshotEventChangeClassifier.isDataChange(event)) {
+            changedPartitions(event).forEach(partition ->
+                    states.add(updateAssetStateForScope(event, partition)));
+        }
         return List.copyOf(states);
     }
 
@@ -88,8 +91,8 @@ public class AssetStateService {
         if (existing.isPresent()) {
             AssetState state = existing.get();
 
-            // Check if this event is newer (monotonic check)
-            if (isEventNewer(state, event)) {
+            // Observed and business-data coordinates advance independently.
+            if (shouldUpdateState(state, event)) {
                 log.debug("Updating asset state for {} from event {}", assetKey, event.getEventId());
                 updateAssetStateFields(state, event);
                 return assetStateRepository.save(state);
@@ -102,15 +105,18 @@ public class AssetStateService {
             log.info("Creating new asset state for {} from event {}", assetKey, event.getEventId());
             AssetState newState = AssetState.builder()
                     .assetKey(assetKey)
-                    .assetType("TABLE")
+                    .assetType(partitionName == null ? "TABLE" : "PARTITION")
                     .catalogName(event.getCatalogName())
                     .databaseName(event.getDatabaseName())
                     .tableName(event.getTableName())
                     .partitionName(partitionName)
                     .latestSnapshotId(event.getSnapshotId())
+                    .latestDataSnapshotId(dataValue(event, event.getSnapshotId()))
                     .latestSchemaId(event.getSchemaId())
                     .latestWatermark(event.getWatermark())
+                    .latestDataWatermark(dataValue(event, event.getWatermark()))
                     .latestCommitTime(event.getCommitTime())
+                    .latestDataCommitTime(dataValue(event, event.getCommitTime()))
                     .qualityStatus("UNKNOWN")
                     .schemaStatus("UNKNOWN")
                     .backfillStatus("NONE")
@@ -167,7 +173,18 @@ public class AssetStateService {
     /**
      * Check if event is newer than current state
      */
-    private boolean isEventNewer(AssetState state, LakehouseEvent event) {
+    private boolean shouldUpdateState(AssetState state, LakehouseEvent event) {
+        return isObservedEventNewer(state, event) || isDataEventNewer(state, event);
+    }
+
+    /**
+     * Check whether an event advances physical snapshot observation.
+     *
+     * @param state current asset state
+     * @param event candidate event
+     * @return true when physical snapshot or timestamp evidence advances
+     */
+    private boolean isObservedEventNewer(AssetState state, LakehouseEvent event) {
         return isIdentifierAfter(event.getSnapshotId(), state.getLatestSnapshotId())
                 || event.getSnapshotId() == null
                         && (isTimeAfter(event.getWatermark(), state.getLatestWatermark())
@@ -175,12 +192,27 @@ public class AssetStateService {
     }
 
     /**
+     * Check whether a business-data event advances the independent data track.
+     *
+     * @param state current asset state
+     * @param event candidate event
+     * @return true when typed data evidence advances
+     */
+    private boolean isDataEventNewer(AssetState state, LakehouseEvent event) {
+        return SnapshotEventChangeClassifier.isDataChange(event)
+                && (isIdentifierAfter(event.getSnapshotId(), state.getLatestDataSnapshotId())
+                || event.getSnapshotId() == null
+                        && (isTimeAfter(event.getWatermark(), state.getLatestDataWatermark())
+                                || isTimeAfter(event.getCommitTime(), state.getLatestDataCommitTime())));
+    }
+
+    /**
      * Update asset state fields from event
      */
     private void updateAssetStateFields(AssetState state, LakehouseEvent event) {
-        boolean snapshotAdvanced =
+        boolean observedSnapshotAdvanced =
                 isIdentifierAfter(event.getSnapshotId(), state.getLatestSnapshotId());
-        if (snapshotAdvanced) {
+        if (observedSnapshotAdvanced) {
             state.setLatestSnapshotId(event.getSnapshotId());
             if (event.getSchemaId() != null) {
                 state.setLatestSchemaId(event.getSchemaId());
@@ -194,7 +226,41 @@ public class AssetStateService {
         if (isTimeAfter(event.getCommitTime(), state.getLatestCommitTime())) {
             state.setLatestCommitTime(event.getCommitTime());
         }
+        updateDataStateFields(state, event);
         // Version is auto-incremented by @Version
+    }
+
+    /**
+     * Advance only the business-data projection of an asset state.
+     *
+     * @param state current asset state
+     * @param event candidate event
+     */
+    private void updateDataStateFields(AssetState state, LakehouseEvent event) {
+        if (!SnapshotEventChangeClassifier.isDataChange(event)) {
+            return;
+        }
+        if (isIdentifierAfter(event.getSnapshotId(), state.getLatestDataSnapshotId())) {
+            state.setLatestDataSnapshotId(event.getSnapshotId());
+        }
+        if (isTimeAfter(event.getWatermark(), state.getLatestDataWatermark())) {
+            state.setLatestDataWatermark(event.getWatermark());
+        }
+        if (isTimeAfter(event.getCommitTime(), state.getLatestDataCommitTime())) {
+            state.setLatestDataCommitTime(event.getCommitTime());
+        }
+    }
+
+    /**
+     * Return a value only when the creating event represents business data.
+     *
+     * @param event creating event
+     * @param value candidate field value
+     * @param <T> field value type
+     * @return value for data snapshots, otherwise null
+     */
+    private <T> T dataValue(LakehouseEvent event, T value) {
+        return SnapshotEventChangeClassifier.isDataChange(event) ? value : null;
     }
 
     /**

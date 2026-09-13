@@ -27,12 +27,11 @@ Lakehouse Flow 当前应该回答：
 | Maven 多模块骨架 | 已实现 | Java 17，Spring Boot 3.2，多模块工程 |
 | PostgreSQL schema | 已实现 | Flyway SQL 使用 PostgreSQL JSONB；当前不支持 MySQL |
 | LakehouseEvent | 已实现 | 原始湖仓事件，按 `event_id` 去重 |
-| AssetState | 已实现 | snapshot 状态单调推进；单个表 snapshot 同时投影表级和 `changedPartitions` 分区级状态 |
+| AssetState | 已实现 | 物理观察与业务数据 snapshot 双轨单调推进；维护提交只更新表级观察轨，数据提交才投影 `changedPartitions` 分区状态 |
 | Lakehouse snapshot source SPI | 已实现基础版 | source/provider/identity/offset ordering 均与湖格式解耦；同一摄取循环可挂载 Paimon、Iceberg、Hudi 等适配器 |
 | Paimon snapshot source | 实现待 E2E | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导 `changedPartitions`；真实 catalog 环境尚待整体 E2E 验证 |
 | EventIngestionService | 基础版 | 动态扫描全部已配置 source；事件、表/分区状态、来源路由、FlowPlan 决策和格式独立 offset 在同一事务提交 |
 | 条件与触发评估 | 基础版 | `FlowPlanConditionService` 支持 AND/OR 分组；`FlowPlanEvaluationService` 从已发布版本生成完整 DAG 调度意图 |
-| DependencyEvaluationService | 兼容层 | 保留旧 `AssetDependency` 单依赖路径，不再作为推荐的自然触发入口 |
 | SnapshotProgressService | 基础版 | 捕获目标资产 publication baseline；资产级 latest 推进不再直接确认共享写入结果 |
 | SnapshotEvidenceService | 基础版 | 在 baseline 后的事件序列中按 intent 属性、格式适配器给出的 `dataChange` 和目标分区匹配 snapshot |
 | SnapshotTriggerRoutingService | 基础版 | 补数/恢复/重跑 snapshot 只推进所属实例，不进入全局自然触发；非法和维护 snapshot 失败关闭 |
@@ -80,7 +79,7 @@ LakehouseSnapshotScanner
 - `SchedulingIntent` 是 Lakehouse Flow 主动发布的不可变指令；baseline 在首次发布前冻结，完整 `instructionPayload` 对数据库、HTTP 和 MQ 保持一致。
 - 正常、补数、恢复和重跑首次发布前共享目标日期准入槽；互斥只控制 Lakehouse Flow 的意图发布，不声称锁住或停止下游执行。
 - 发布版本策略会决定节点确认窗口、目标日期租约和版本活跃 workflow 上限；达到并发上限的任务保持 READY，不产生 intent，也不提前冻结 baseline。
-- 下游必须把 `requiredSnapshotProperties` 原样写入最终数据 snapshot；湖格式适配器把原生 operation 映射为格式无关的 `dataChange`，维护 snapshot 只推进资产状态，不确认 task。
+- 下游必须把 `requiredSnapshotProperties` 原样写入最终数据 snapshot；湖格式适配器把原生 operation 映射为 typed `dataChange`。维护 snapshot 只推进 source offset 和表级 `latestSnapshotId`，不推进 `latestDataSnapshotId`、分区状态、自然触发或 task 确认。
 - 补数、恢复和重跑 snapshot 会更新真实资产事实并确认所属 intent，但不会额外创建正常 `SNAPSHOT_DRIVEN` workflow；正常 intent 的最终 snapshot 和外部数据提交仍可驱动自然调度。
 - `changedPartitions` 会形成独立分区状态，历史分区补数不会推进当前日期的分区资产键。
 - 传输 ACK 只作为投递证据，不能放行 DAG 或确认任务结果。完整协议见 [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md)。
@@ -179,7 +178,7 @@ curl 'http://localhost:8080/api/v1/scheduling-intent-deliveries/dead-letters?cha
 
 核心指标包括 `lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempt_duration_seconds`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
 
-source reconciliation 周期性核对湖表 earliest/latest、durable offset、最新持久化事件和表级 `AssetState`。`UNINITIALIZED` / `LAGGING` 通过正常连续摄入补偿；已有事件对应的 `AssetState` 缺失或漂移时重放该事件投影；`RETENTION_GAP`、`OFFSET_AHEAD`、durable offset 缺少事件等情况进入 `BLOCKED` 并告警，不允许自动跨越历史或构造 snapshot。
+source reconciliation 周期性核对湖表 earliest/latest、durable offset、最新物理事件/状态和最新业务数据事件/状态。`UNINITIALIZED` / `LAGGING` 通过正常连续摄入补偿；物理或数据投影缺失/漂移时重放对应 durable event；`RETENTION_GAP`、`OFFSET_AHEAD`、durable offset 缺少事件或无事件支撑的状态等情况进入 `BLOCKED` 并告警，不允许自动跨越历史或构造 snapshot。
 
 `startup-mode` 默认 `LATEST`，首次接入只摄入最新 snapshot 并建立一次当前事实；`EARLIEST` 会显式回放仍被保留的历史 snapshot，可能触发历史业务日期，只用于明确的数据恢复场景。常规历史补数应使用 `BackfillBatch`，不要依赖 source 回放。
 

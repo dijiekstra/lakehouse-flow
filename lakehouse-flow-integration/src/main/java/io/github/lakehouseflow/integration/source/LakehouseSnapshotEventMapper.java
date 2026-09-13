@@ -41,6 +41,7 @@ public class LakehouseSnapshotEventMapper {
                 .schemaId(snapshot.schemaId())
                 .watermark(snapshot.watermark())
                 .commitKind(snapshot.commitKind())
+                .dataChange(snapshot.dataChange())
                 .commitTime(snapshot.commitTime())
                 .payloadJson(payload)
                 .build();

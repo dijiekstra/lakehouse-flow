@@ -125,11 +125,11 @@ AND snapshotProperties 包含全部 requiredSnapshotProperties
 AND 目标为分区资产时，changedPartitions 包含 expectedPartition
 ```
 
-未携带本次 `intentKey` 的补数、正常任务、外部写入和维护提交仍会更新 `AssetState`，但不会确认当前调度意图。即使匹配 snapshot 之后又出现了其他 snapshot，历史匹配证据也不会被最新状态覆盖。
+未携带本次 `intentKey` 的补数、正常任务和外部数据写入仍会更新 `AssetState` 的业务数据轨，但不会确认当前调度意图；维护提交只更新物理观察轨。即使匹配 snapshot 之后又出现了其他 snapshot，历史匹配证据也不会被最新状态覆盖。
 
 ## 6. Snapshot 触发路由
 
-所有 snapshot 都进入事件账本并更新表级 `AssetState`；存在 `changedPartitions` 时，还要逐个更新分区级 `AssetState`。是否进入全局自然触发由 snapshot 来源决定：
+所有 snapshot 都进入事件账本、推进 source offset 并更新表级 `AssetState.latestSnapshotId`。只有 typed `dataChange=true` 才更新 `latestDataSnapshotId/latestDataWatermark/latestDataCommitTime`，并按 `changedPartitions` 更新分区级 `AssetState`。是否进入全局自然触发还要由 snapshot 来源决定：
 
 ```text
 外部 dataChange=true snapshot
@@ -158,7 +158,7 @@ Lakehouse Flow 的摄入核心只消费统一 `LakehouseSnapshot`，其中：
 - `snapshotId` 是适配器归一化后的单调调度坐标，用于 baseline 和推进比较；原生 snapshot id 不具备顺序语义时必须保留在 payload，不能直接填入该字段；
 - `schemaId` 是当前 snapshot 关联的原生 schema 标识，只作为事实，不进行跨格式大小比较；
 - `commitKind` 保留原生 operation，仅用于审计；
-- `dataChange` 是适配器给出的跨格式统一分类；
+- `dataChange` 是适配器给出的跨格式统一分类，并持久化为事件 typed 字段；
 - `snapshotProperties` 提供 intent 归因；
 - `changedPartitions` 提供分区目标证据。
 
@@ -189,7 +189,7 @@ Paimon 1.3 的标准 `BatchTableCommit` 与普通 SQL 写入链路没有暴露�
 
 适配器必须实现当前位置检查，并明确返回 `EMPTY`、`UNINITIALIZED`、`IN_SYNC`、`LAGGING`、`RETENTION_GAP`、`OFFSET_AHEAD` 或 `ERROR`。是否存在 retention gap 只能由格式适配器依据其原生 offset 语义判断，公共调度代码不得猜测。
 
-Lakehouse Flow 对账 `source range -> durable offset -> latest event -> table AssetState`。只允许两类自动补偿：从 durable offset 严格后继继续读取仍保留的 snapshot，以及重放已经持久化的事件投影。不得修改 snapshot、伪造事件、把 offset 跳到 latest，或因对账异常确认任何调度意图。
+Lakehouse Flow 同时对账物理轨 `source range -> durable offset -> latest event -> AssetState.latestSnapshotId` 和业务轨 `latest data event -> AssetState.latestDataSnapshotId`。只允许两类自动补偿：从 durable offset 严格后继继续读取仍保留的 snapshot，以及重放已经持久化的物理或数据事件投影。不得修改 snapshot、伪造事件、把 offset 跳到 latest，或因对账异常确认任何调度意图。
 
 `RETENTION_GAP`、`OFFSET_AHEAD`、offset 缺少事件、source latest 缺少对应事件等状态必须失败关闭。运维可通过 Prometheus source 指标查看 lag、gap 和 projection inconsistency；这些指标不会替代 snapshot 证据。
 

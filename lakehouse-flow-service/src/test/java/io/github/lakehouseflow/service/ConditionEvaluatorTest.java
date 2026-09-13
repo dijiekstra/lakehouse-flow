@@ -86,6 +86,23 @@ class ConditionEvaluatorTest {
         assertEquals("2026-09-12T01:00:00", result.getWatermark());
     }
 
+    /** Verify maintenance-only physical progress cannot satisfy a data snapshot condition. */
+    @Test
+    void evaluateConditionIgnoresMaintenanceSnapshotProgress() {
+        AssetState state = assetState();
+        state.setLatestSnapshotId("101");
+        state.setLatestWatermark(LocalDateTime.of(2026, 9, 12, 2, 0));
+        when(assetStateRepository.findByAssetKey(ASSET_KEY)).thenReturn(Optional.of(state));
+
+        EvaluationResult snapshot = conditionEvaluator.evaluateCondition("SNAPSHOT_ID_GTE", ASSET_KEY, "101");
+        EvaluationResult watermark = conditionEvaluator.evaluateCondition(
+                "WATERMARK_GTE", ASSET_KEY, "2026-09-12T01:30:00");
+
+        assertFalse(snapshot.getSatisfied());
+        assertTrue(snapshot.getWaitingReason().contains("current: 100"));
+        assertFalse(watermark.getSatisfied());
+    }
+
     /**
      * Verify QUALITY_PASSED checks asset quality evidence.
      */
@@ -132,7 +149,9 @@ class ConditionEvaluatorTest {
                 .databaseName("prod")
                 .tableName("orders")
                 .latestSnapshotId("100")
+                .latestDataSnapshotId("100")
                 .latestWatermark(LocalDateTime.of(2026, 9, 12, 1, 0))
+                .latestDataWatermark(LocalDateTime.of(2026, 9, 12, 1, 0))
                 .qualityStatus("PASSED")
                 .schemaStatus("COMPATIBLE")
                 .build();

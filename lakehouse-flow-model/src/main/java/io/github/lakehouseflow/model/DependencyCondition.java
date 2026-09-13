@@ -3,7 +3,7 @@ package io.github.lakehouseflow.model;
 import java.util.Map;
 
 /**
- * One normalized dependency condition from AssetDependency.dependencyConditions.
+ * One normalized input condition from a published FlowPlan dependency specification.
  */
 public record DependencyCondition(
         String type,
@@ -13,8 +13,8 @@ public record DependencyCondition(
     /**
      * Build a condition from a JSON-like map.
      *
-     * @param rawCondition condition payload from dependencyConditions
-     * @param defaultAssetKey asset key inherited from AssetDependency
+     * @param rawCondition condition payload from a FlowPlan or ScheduleNode dependency specification
+     * @param defaultAssetKey optional asset key inherited from the enclosing specification
      * @return normalized condition with stable defaults
      */
     public static DependencyCondition from(Map<String, Object> rawCondition, String defaultAssetKey) {

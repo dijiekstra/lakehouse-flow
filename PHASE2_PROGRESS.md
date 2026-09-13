@@ -2,7 +2,7 @@
 
 **最后更新**: 2026-09-13
 **基准用途**: 后续开发进度、差距检查和版本目标均以本文档为准。
-**当前推进项**: 补数功能模型已达到退出标准；G11/G12 已完成 snapshot 路由隔离和跨实例目标日期准入。G10 的整体 Testcontainers E2E 与 Iceberg/Hudi adapter 按当前决策暂缓。G13 已完成确认窗口、目标准入租约和版本活跃实例上限的基础执行。G3 已完成统一 publisher SPI、HTTP/MQ 通道边界与可靠投递基础。G7 已补齐 delivery/source 指标、死信筛选和失败关闭的 source 对账补偿；G8 Flow/Node 聚合与稳定游标按当前决策后移。
+**当前推进项**: 补数功能模型已达到退出标准；G2 已移除旧 `AssetDependency` 运行时路径，统一到发布 FlowPlan；G7 已补齐 delivery/source 指标、双轨 AssetState 对账和失败关闭补偿；G11/G12 已完成 snapshot 路由隔离和跨实例目标日期准入。G13 已完成基础策略执行，并对未实现的 mode、priority 和 dedupe window 失败关闭。G10 的整体 Testcontainers E2E 与 Iceberg/Hudi adapter、G8 Flow/Node 聚合与稳定游标均按当前决策后移。
 
 ## 目标边界
 
@@ -26,9 +26,9 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 
 | 能力 | 状态 | 说明 |
 |------|------|------|
-| 资产状态模型 | 已完成 | `AssetState` 记录目标资产最新 snapshot、watermark、质量和 schema 状态；表 snapshot 同时投影表级和 changed-partition 状态。 |
-| 依赖条件模型 | 已完成 | `DependencySpec` / `DependencyCondition` 支持 snapshot、水位、质量、schema 条件。 |
-| 依赖评估服务 | 已完成基础版 | `FlowPlanConditionService` 解析 AND/OR 分组和 `${bizDate}`；旧 `DependencyEvaluationService` 仅保留兼容。 |
+| 资产状态模型 | 已完成 | `AssetState` 分离物理观察与业务数据 snapshot/watermark；所有 snapshot 更新表级观察轨，只有 `dataChange=true` 更新业务轨和 changed-partition 状态。 |
+| 依赖条件模型 | 已完成 | `FlowPlanVersion.dependencySpecJson` / `ScheduleNode.inputDependencySpecJson` 与 `DependencyCondition` 支持 snapshot、水位、质量、schema 条件。 |
+| 依赖评估服务 | 已完成基础版 | `FlowPlanConditionService` 解析 AND/OR 分组和 `${bizDate}`；自然触发统一由 `FlowPlanEvaluationService` 处理。 |
 | 调度实例状态 | 已完成 | `WorkflowInstance` / `TaskInstance` 表示调度侧实例，不表示真实执行进程；已支持可选关联 `FlowPlanVersion` / `ScheduleNode`。 |
 | Snapshot 推进确认 | 已完成基础版 | `SnapshotProgressService` 捕获 baseline；`SnapshotEvidenceService` 在完整事件序列中按 intent 属性、适配器统一 `dataChange` 分类和目标分区归因后确认结果。 |
 | Snapshot 补偿扫描 | 已完成基础版 | `SnapshotConfirmationScanner` 周期性检查已调度但未确认的调度实例。 |
@@ -53,12 +53,12 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 | 编号 | 差距 | 当前状态 | 目标版本 | 说明 |
 |------|------|----------|----------|------|
 | G1 | API 层缺失 | 基础完成 | LF-0.3 | 已新增 FlowPlan/Node、scheduling action、instance evidence、task scheduling intent 最小 REST API。 |
-| G2 | FlowPlan / Node 模型缺失 | 基础完成 | LF-0.2 | 模型、发布图校验、日期模板、自然触发和实例定义锚点均已完成；旧 `AssetDependency` 仅作兼容，后续移除。 |
+| G2 | FlowPlan / Node 模型缺失 | 已完成 | LF-0.2 | 模型、发布图校验、日期模板、自然触发和实例定义锚点均已完成；旧 `AssetDependency` 运行时路径已移除。 |
 | G3 | 调度意图主动投递协议不完整 | 基础完成 | LF-0.3 | 已完成不可变 intent、版本化完整 payload、单一选定路由、统一 publisher SPI、数据库/HTTP/MQ 通道边界、内部 claim 租约与 fencing、退避重试、最大尝试和死信审计。HTTP 已有 Java 17 client；MQ 保持 broker-neutral gateway，具体产品绑定由部署适配器提供。真实事务/网络链路留待整体 E2E。 |
 | G4 | Node 级重跑和恢复能力不足 | 已完成 | LF-0.4 | 已支持 task/published node 局部重跑，以及 `FULL_SCOPE` 和单失败节点 `FAILED_NODE_CASCADE` 两种替代恢复；非闭合 DAG 或多失败节点请求会拒绝并要求全范围恢复。 |
 | G5 | 补数缺少批次、并发和级联策略 | 已完成 | LF-0.4 | 完整 Flow 与 Node 子图补数均已纳入统一批次模型，支持不可变节点范围、日期准入、级联、安全整日跳过、控制和失败替代恢复；审批上限按当前决策暂缓且不阻塞专题退出。 |
 | G6 | Target snapshot baseline 与节点绑定不足 | 基础完成 | LF-0.2 / LF-0.4 | intent 携带目标资产、定义锚点、baseline 和必须写入最终 snapshot 的归因属性；确认按历史事件而非任意 latest 推进，后续只由匹配 snapshot 驱动 DAG。 |
-| G7 | 补偿扫描还不够生产化 | 基础完成 | LF-0.5 | 已有 delivery publisher/scan 指标、channel/status 记录数、死信筛选 API，以及 `source -> offset -> event -> AssetState` 对账。落后 offset 连续补扫、已有事件投影可重放；retention gap、offset ahead 和事件缺失失败关闭。真实湖与 PostgreSQL 运行验证归入暂缓的整体 E2E。 |
+| G7 | 补偿扫描还不够生产化 | 基础完成 | LF-0.5 | 已有 delivery publisher/scan 指标、channel/status 记录数、死信筛选 API，以及物理 snapshot 轨和业务数据轨对账。落后 offset 连续补扫、已有物理/数据事件投影可重放；retention gap、offset ahead、事件缺失和无事件支撑的状态失败关闭。真实湖与 PostgreSQL 运行验证归入暂缓的整体 E2E。 |
 | G8 | 查询视图和审计视图不足 | 部分完成 | LF-0.5 | action 侧已支持按 Flow、版本、节点筛选摘要，并按 action key 联查补数批次和逐 task snapshot 证据；仍缺 Flow 聚合实例视图、分页游标、指标和运维 UI。 |
 | G9 | Flow 级隔离和并发策略未固化 | 部分建模 | LF-0.5 | `FlowPlan.owner/flowSpaceCode` 已记录归属，但当前 API 仍是全局 ID 访问且 `requestedBy` 只是审计字段，不构成授权；后续接可信身份后按 Flow 做 RBAC/配额，不引入重型租户层。 |
 | G10 | 真实湖格式 snapshot 归因元数据采集不完整 | 部分完成（Paimon 实现） | LF-0.5 | 已移除生产 mock，建立通用 source SPI，并实现 Paimon properties/delta-manifest 读取、分区推导、offset 批量扫描和 retention gap 失败关闭；待整体 E2E 与 Iceberg/Hudi 适配器。 |
@@ -81,11 +81,11 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 5. 新增最小 `FlowPlanService`：创建草稿 Flow、创建草稿版本、添加节点、发布版本、查询版本节点。
 6. 增加单元测试，保证定义创建、版本发布和节点绑定语义稳定。
 7. `WorkflowInstance` / `TaskInstance` 已支持可选 `flowPlanVersionId` / `scheduleNodeId`，node rerun 生成的实例可追溯到发布定义。
+8. 移除旧 `AssetDependency`、Repository 和 `DependencyEvaluationService` 运行时路径，自然触发统一进入发布 FlowPlan；旧 schema 表仅保留数据库升级兼容，不再读取。
 
 后续增强：
 
-1. 移除旧 `AssetDependency` 自然触发兼容路径，统一到 FlowPlan 发布版本。
-2. 增加按 FlowPlan、版本、节点维度的实例聚合查询视图。
+1. 增加按 FlowPlan、版本、节点维度的实例聚合查询视图。
 
 暂不做：
 
@@ -154,10 +154,11 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 2. 提供只读 `GET /api/v1/scheduling-intent-deliveries/dead-letters`，支持 channel 和 limit 筛选；返回值只表达传输死信。
 3. source scan 记录成功/失败、耗时和新增事件数；reconciliation 记录 pending offset、健康状态、retention gap 和投影不一致。
 4. `LakehouseSnapshotSource.inspectPosition` 将 earliest/latest、lag 和 retention gap 解释权固定在格式适配器；Paimon 已实现连续数字 snapshot id 语义。
-5. 周期性对账核验 live source、durable offset、最新持久化 event 和表级 `AssetState`。
-6. `UNINITIALIZED` / `LAGGING` 复用正常原子摄入链路补偿；已有 event 的 AssetState 缺失或漂移可重放投影。
+5. 周期性对账核验 live source、durable offset、最新物理 event/state 和最新 typed data event/state。
+6. `UNINITIALIZED` / `LAGGING` 复用正常原子摄入链路补偿；物理或业务数据 AssetState 缺失/漂移时重放对应 durable event。
 7. `RETENTION_GAP`、`OFFSET_AHEAD`、offset 缺少 event、source latest 与 event 不一致均保持 `BLOCKED`，不得跳 offset 或构造 snapshot。
 8. Mockito 测试覆盖所有 reconciliation service public 方法、三类运维结果、指标和死信筛选。
+9. V20 将 `LakehouseEvent.dataChange` 提升为 typed 字段，并把 `AssetState` 拆成物理观察轨和业务数据轨；只从可确定分类的 durable data event 回建已有表/分区业务轨，compaction 只推进表级观察轨，不能满足依赖、创建分区状态或确认 intent。
 
 退出规则：单元级功能已达到基础退出标准；真实 Paimon/PostgreSQL 的指标抓取、锁竞争和故障恢复验证随整体 Testcontainers E2E 补齐，不再单独阻塞 G7 功能推进。
 
@@ -289,7 +290,7 @@ G13 剩余增强：
 | 失败恢复 | 支持确定性的 `FULL_SCOPE` 和单失败节点 `FAILED_NODE_CASCADE`；多失败节点、缺父 join 和范围不闭合均 fail closed | 通过 |
 | 审计查询 | action、替代批次、逐节点 intent 和 baseline/observed snapshot 证据可关联查询，action 状态与 snapshot 结果分离 | 通过 |
 | 正常推进隔离 | 补数、恢复和重跑 snapshot 不产生额外正常实例；历史分区不推进当前日期分区状态；未归属 snapshot 不显示为成功 | 通过 |
-| 质量门槛 | `./mvnw test` 零 failure/error/skip；service line >= 90%、branch >= 65%；每个显式 public service 方法都有直接单元测试调用 | 通过：303 tests，line 90.6%，branch 68.5%；显式 public service 方法直接调用检查通过，delivery query service 1/1、source reconciliation service 3/3 |
+| 质量门槛 | `./mvnw test` 零 failure/error/skip；service line >= 90%、branch >= 65%；每个显式 public service 方法都有直接单元测试调用 | 通过：303 tests，line 90.9%，branch 69.5%；显式 public service 方法直接调用检查通过，delivery query service 1/1、source reconciliation service 3/3 |
 
 退出规则：以上门槛必须同时通过。达到后，补数专题只接受缺陷修复和整体能力带来的必要适配，不再独立扩展功能；开发回到整体版本差距。补数审批上限按已确认决策暂缓，真实 PostgreSQL/Flyway 验证归入 Lakehouse Flow 整体 Testcontainers E2E，二者都不阻塞本专题退出。
 
@@ -321,7 +322,7 @@ G13 剩余增强：
 
 当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。Testcontainers 留到后续系统级 E2E：从 API/事件入口贯穿 PostgreSQL/Flyway、事务与约束、FlowPlan 决策、内部 outbox 发布、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独模块，也不用来替代当前单元测试。
 
-2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean test` 共 303 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 90.6%、branch 68.5%、method 90.4%。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V19 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
+2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean test` 共 303 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 90.9%、branch 69.5%、method 90.5%。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
 
 每次推进后至少执行：
 

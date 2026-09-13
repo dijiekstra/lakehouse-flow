@@ -33,8 +33,6 @@ public class SnapshotTriggerRoutingService {
             "RERUN_TASK",
             "MANUAL_ACTION");
 
-    private static final Set<String> LEGACY_DATA_COMMIT_KINDS = Set.of("APPEND", "OVERWRITE");
-
     private final SchedulingIntentRepository schedulingIntentRepository;
 
     /**
@@ -155,12 +153,7 @@ public class SnapshotTriggerRoutingService {
      * @return true when its source adapter classified it as a business-data change
      */
     private boolean isAcceptedDataCommit(LakehouseEvent event) {
-        Map<String, Object> payload = event.getPayloadJson();
-        if (payload != null && payload.containsKey(SnapshotEvidenceContract.DATA_CHANGE_FIELD)) {
-            return Boolean.TRUE.equals(payload.get(SnapshotEvidenceContract.DATA_CHANGE_FIELD));
-        }
-        return event.getCommitKind() != null
-                && LEGACY_DATA_COMMIT_KINDS.contains(event.getCommitKind().trim().toUpperCase(Locale.ROOT));
+        return SnapshotEventChangeClassifier.isDataChange(event);
     }
 
     /**

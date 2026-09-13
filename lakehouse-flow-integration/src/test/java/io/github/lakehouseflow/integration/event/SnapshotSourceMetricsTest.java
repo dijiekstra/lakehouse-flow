@@ -46,7 +46,7 @@ class SnapshotSourceMetricsTest {
                 SnapshotSourceReconciliationOutcome.BLOCKED,
                 SnapshotSourceOffsetStatus.RETENTION_GAP,
                 SnapshotProjectionStatus.CONSISTENT,
-                "8", "10", "12", "12", "8", "8", 3L,
+                "8", "10", "12", "12", "8", "8", "8", "8", 3L,
                 false, 0, "gap", LocalDateTime.now());
 
         metrics.recordReconciliation(reconciliation);

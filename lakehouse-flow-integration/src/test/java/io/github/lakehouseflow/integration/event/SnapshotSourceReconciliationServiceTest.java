@@ -87,6 +87,8 @@ class SnapshotSourceReconciliationServiceTest {
 
         assertEquals(SnapshotSourceReconciliationOutcome.HEALTHY, result.outcome());
         assertEquals(SnapshotProjectionStatus.CONSISTENT, result.projectionStatus());
+        assertEquals("10", result.latestDataEventSnapshotId());
+        assertEquals("10", result.assetStateDataSnapshotId());
         verify(metrics).recordReconciliation(result);
     }
 
@@ -119,6 +121,8 @@ class SnapshotSourceReconciliationServiceTest {
                 "9", "1", "10", "10", 1L, "lagging"));
         when(source.inspectPosition("10")).thenReturn(inSync("10"));
         when(eventRepository.findLatestSourceEvent("PAIMON", "lake", "ods", "orders"))
+                .thenReturn(Optional.of(event("9")), Optional.of(event("10")));
+        when(eventRepository.findLatestDataSourceEvent("PAIMON", "lake", "ods", "orders"))
                 .thenReturn(Optional.of(event("9")), Optional.of(event("10")));
         when(assetStateRepository.findByAssetKey("lake.ods.orders"))
                 .thenReturn(Optional.of(state("9")), Optional.of(state("10")));
@@ -168,6 +172,8 @@ class SnapshotSourceReconciliationServiceTest {
         when(source.offsetComparator()).thenReturn(Comparator.comparingLong(Long::parseLong));
         when(eventRepository.findLatestSourceEvent("PAIMON", "lake", "ods", "orders"))
                 .thenReturn(Optional.of(event));
+        when(eventRepository.findLatestDataSourceEvent("PAIMON", "lake", "ods", "orders"))
+                .thenReturn(Optional.of(event));
         when(assetStateRepository.findByAssetKey("lake.ods.orders"))
                 .thenReturn(Optional.of(state("9")), Optional.of(state("10")));
 
@@ -183,6 +189,36 @@ class SnapshotSourceReconciliationServiceTest {
                 event);
     }
 
+    /** Verify reconciliation replays the latest data event behind a newer compaction. */
+    @Test
+    void reconcileAndRepairAllSourcesReplaysDataProjectionBehindCompaction() {
+        when(sourceRegistry.sources()).thenReturn(List.of(source));
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("11").build();
+        LakehouseEvent compact = event("11", false);
+        LakehouseEvent data = event("10", true);
+        when(offsetRepository.findBySourceTypeAndSourceName("PAIMON", "orders"))
+                .thenReturn(Optional.of(offset));
+        when(source.inspectPosition("11")).thenReturn(inSync("11"));
+        when(source.offsetComparator()).thenReturn(Comparator.comparingLong(Long::parseLong));
+        when(eventRepository.findLatestSourceEvent("PAIMON", "lake", "ods", "orders"))
+                .thenReturn(Optional.of(compact));
+        when(eventRepository.findLatestDataSourceEvent("PAIMON", "lake", "ods", "orders"))
+                .thenReturn(Optional.of(data));
+        when(assetStateRepository.findByAssetKey("lake.ods.orders"))
+                .thenReturn(Optional.of(state("11", "9")), Optional.of(state("11", "10")));
+
+        SnapshotSourceReconciliation result =
+                reconciliationService.reconcileAndRepairAllSources().get(0);
+
+        assertEquals(SnapshotSourceReconciliationOutcome.HEALTHY, result.outcome());
+        assertTrue(result.repairAttempted());
+        verify(transactionService).processSnapshot(
+                "orders",
+                "11",
+                source.offsetComparator(),
+                data);
+    }
+
     /** Stub one complete reconciliation inspection. */
     private void stubInspection(
             String durableOffset,
@@ -193,6 +229,8 @@ class SnapshotSourceReconciliationServiceTest {
                 .thenReturn(Optional.of(EventConsumerOffset.builder().offsetValue(durableOffset).build()));
         when(source.inspectPosition(durableOffset)).thenReturn(position);
         when(eventRepository.findLatestSourceEvent("PAIMON", "lake", "ods", "orders"))
+                .thenReturn(Optional.of(event));
+        when(eventRepository.findLatestDataSourceEvent("PAIMON", "lake", "ods", "orders"))
                 .thenReturn(Optional.of(event));
         when(assetStateRepository.findByAssetKey("lake.ods.orders")).thenReturn(Optional.of(state));
     }
@@ -206,20 +244,32 @@ class SnapshotSourceReconciliationServiceTest {
 
     /** Build one durable event fixture. */
     private LakehouseEvent event(String snapshotId) {
+        return event(snapshotId, true);
+    }
+
+    /** Build one durable event fixture with an explicit data classification. */
+    private LakehouseEvent event(String snapshotId, boolean dataChange) {
         return LakehouseEvent.builder()
                 .sourceType("PAIMON")
                 .catalogName("lake")
                 .databaseName("ods")
                 .tableName("orders")
                 .snapshotId(snapshotId)
+                .dataChange(dataChange)
                 .build();
     }
 
     /** Build one table-level AssetState fixture. */
     private AssetState state(String snapshotId) {
+        return state(snapshotId, snapshotId);
+    }
+
+    /** Build one table-level AssetState fixture with split snapshot coordinates. */
+    private AssetState state(String snapshotId, String dataSnapshotId) {
         return AssetState.builder()
                 .assetKey("lake.ods.orders")
                 .latestSnapshotId(snapshotId)
+                .latestDataSnapshotId(dataSnapshotId)
                 .build();
     }
 }

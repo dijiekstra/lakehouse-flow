@@ -36,7 +36,7 @@ LakehouseSnapshotScanner
 
 已实现模块：
 
-- `lakehouse-flow-model`: `LakehouseEvent`, `AssetState`, `AssetDependency`, `FlowPlan`, `FlowPlanVersion`, `ScheduleNode`, `WorkflowInstance`, `TaskInstance`, `SchedulingIntent`, `SchedulingIntentDelivery`, `TriggerHistory`, `SchedulingAction`, `EventConsumerOffset`
+- `lakehouse-flow-model`: `LakehouseEvent`, `AssetState`, `DependencyCondition`, `FlowPlan`, `FlowPlanVersion`, `ScheduleNode`, `WorkflowInstance`, `TaskInstance`, `SchedulingIntent`, `SchedulingIntentDelivery`, `TriggerHistory`, `SchedulingAction`, `EventConsumerOffset`
 - `lakehouse-flow-dao`: Spring Data JPA repository 与 PostgreSQL Flyway schema
 - `lakehouse-flow-service`: 事件摄入辅助、资产状态推进、条件评估、snapshot 进展确认、FlowPlan 管理、调度意图交付、action、实例服务、触发审计服务
 - `lakehouse-flow-api`: FlowPlan/Node、action、instance evidence、task scheduling intent 只读审计 API
@@ -59,7 +59,7 @@ LakehouseSnapshotScanner
 - `eventId`: 去重键
 - `sourceType`: `PAIMON`、后续可扩展 `ICEBERG` / `HUDI`
 - `catalogName`, `databaseName`, `tableName`, `partitionName`
-- `snapshotId`, `schemaId`, `watermark`, `commitTime`
+- `snapshotId`, `schemaId`, `watermark`, `commitTime`, `dataChange`
 - `payloadJson`: 原始事件细节
 
 ### AssetState
@@ -69,20 +69,23 @@ LakehouseSnapshotScanner
 关键字段：
 
 - `assetKey`: `catalog.database.table[.partition]`
-- `latestSnapshotId`: 最新 snapshot
-- `latestWatermark`: 最新事件时间水位
+- `latestSnapshotId`: 最新物理 snapshot，包含数据与维护提交
+- `latestDataSnapshotId`: 最新业务数据 snapshot
+- `latestWatermark`, `latestCommitTime`: 最新物理观察事实
+- `latestDataWatermark`, `latestDataCommitTime`: 最新业务数据事实
 - `qualityStatus`, `schemaStatus`, `backfillStatus`, `readinessStatus`
 - `version`: JPA 乐观锁版本
 
 单调性规则：
 
-- 新 snapshot 可以推进状态，旧 snapshot 不能回退状态。
+- 物理观察轨和业务数据轨分别单调推进，旧 snapshot 不能回退任一轨道。
+- `COMPACT` / `ANALYZE` 只推进表级物理观察轨，不推进业务数据轨，也不创建分区业务状态。
 - snapshot ID 字段虽然是字符串，但比较时数字 ID 按数字顺序处理。
 - snapshot、schema、watermark、commit time 各自只允许单调推进；较新的 snapshot 不能携带较旧 watermark 覆盖现值。
 
-### AssetDependency
+### DependencySpec
 
-`AssetDependency` 是旧兼容模型，不再是推荐的自然触发入口。新定义使用 `FlowPlanVersion.dependencySpecJson` 和 `ScheduleNode.inputDependencySpecJson`，由 `FlowPlanConditionService` 解释 AND/OR 分组条件。
+依赖定义只存在于发布的 `FlowPlanVersion.dependencySpecJson` 和 `ScheduleNode.inputDependencySpecJson` 中，由 `FlowPlanConditionService` 解释 AND/OR 分组条件。旧 `AssetDependency` 运行时路径已经移除，避免同一资产变化进入两套自然触发模型；初始 schema 中保留的旧表仅用于兼容已有数据库升级，不再由 JPA 或调度服务读取。
 
 当前条件评估器支持：
 
@@ -182,7 +185,8 @@ sort snapshots by snapshot ordering
 for each snapshot in order:
   begin transaction
   insert-or-load LakehouseEvent
-  project table and changed-partition AssetState monotonically
+  project every snapshot into table observed state
+  if dataChange=true, also project table data state and changed partitions
   classify snapshot origin from immutable intent evidence
   if natural progression is allowed:
     release waiting DAG nodes affected by changed asset scopes
@@ -204,14 +208,15 @@ for each snapshot in order:
 
 ```text
 if asset_state 不存在:
-  create state from event
+  create observed state from event
+  initialize data state only when dataChange=true
 else:
-  independently advance snapshot/schema/watermark/commit time fields
+  independently advance observed and data snapshot/watermark/commit-time fields
   never overwrite any field with older evidence
   ignore the event when no field advances
 ```
 
-一个 snapshot 始终更新表级状态，并从 `changedPartitions` 派生独立的分区级状态。例如历史 `dt=2026-09-01` 补数不会推进 `dt=2026-09-13` 的分区状态。日期型 FlowPlan 必须使用带 `${bizDate}` 的分区资产；显式整表依赖会观察任意分区提交，这是整表语义而不是隔离缺陷。
+每个 snapshot 都更新表级物理观察状态；只有 `dataChange=true` 才更新表级业务数据状态，并从 `changedPartitions` 派生独立的分区状态。`ConditionEvaluator` 的 snapshot/watermark 条件只读取业务数据轨。例如历史 `dt=2026-09-01` 补数不会推进 `dt=2026-09-13` 的分区状态，compaction 也不能满足任何分区数据依赖。日期型 FlowPlan 必须使用带 `${bizDate}` 的分区资产；显式整表依赖会观察任意业务数据分区提交，这是整表语义而不是隔离缺陷。
 
 ### 4. 条件评估
 
@@ -261,7 +266,7 @@ Node 补数还支持日期级推进策略：`PARALLEL` 一次准入全部日期�
 
 当前实现：`SnapshotProgressService` 捕获 publication baseline，`SnapshotEvidenceService` 从持久化 snapshot 事件序列匹配调度意图。
 
-`AssetState` 继续吸收所有 snapshot 推进，供资产依赖和最新状态判断使用；task 结果确认不再只读取 `asset_state.latest_snapshot_id`：
+`AssetState.latestSnapshotId` 吸收所有物理 snapshot，供 baseline、source 连续性和运维判断使用；资产依赖读取 `latestDataSnapshotId/latestDataWatermark`。task 结果确认不直接使用任一 latest 字段：
 
 ```text
 scan every durable snapshot event after baseline
@@ -368,7 +373,7 @@ SnapshotConfirmationScanner
 
 ### 状态单调推进
 
-`AssetState` 的 snapshot 不回退。对于数字 snapshot ID，必须使用数字比较；字符串字典序会导致 `"99"` 被错误认为大于 `"100"`。
+`AssetState` 的物理观察轨和业务数据轨都不回退。对于数字 snapshot ID，必须使用数字比较；字符串字典序会导致 `"99"` 被错误认为大于 `"100"`。
 
 ### Offset 保守推进
 
@@ -382,10 +387,12 @@ offset 代表“已连续处理到的位置”，不是“本批次见过的最�
 live source range
   -> event_consumer_offset
   -> latest durable lakehouse_event
-  -> table-level asset_state
+  -> table-level asset_state.latestSnapshotId
+  -> latest durable data-change event
+  -> table-level asset_state.latestDataSnapshotId
 ```
 
-`UNINITIALIZED` 和 `LAGGING` 通过现有连续摄入事务补偿。事件已持久化但表级 `AssetState` 缺失或落后时，可重放该事件的投影；幂等约束和单调 snapshot 比较继续保护调度决定。`RETENTION_GAP`、`OFFSET_AHEAD`、offset 有值但事件缺失、source latest 与事件不一致时必须 `BLOCKED`，因为自动推进会跳过或制造 snapshot 事实。
+`UNINITIALIZED` 和 `LAGGING` 通过现有连续摄入事务补偿。V20 只从可确定分类的 durable data event 回建已有表/分区的业务轨，不会把语义不明的旧 `latestSnapshotId` 猜成业务数据状态；启动后物理或业务数据投影缺失/落后时，分别重放最新物理事件或最新 typed data event。幂等约束和双轨单调比较继续保护调度决定。`RETENTION_GAP`、`OFFSET_AHEAD`、offset 有值但事件缺失、source latest 与事件不一致，或 AssetState 声称存在但事件账本没有对应数据事实时必须 `BLOCKED`。
 
 对账指标记录 source lag、retention gap 和投影一致性；delivery 指标记录 publisher 尝试、耗时和各 channel/status 记录数。所有这些都是调度观察与传输证据，不参与 task 成功失败判断。
 

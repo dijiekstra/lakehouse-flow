@@ -49,6 +49,7 @@ class AssetStateServiceTest {
 
         assertEquals("paimon.prod.orders", result.getAssetKey());
         assertEquals("100", result.getLatestSnapshotId());
+        assertEquals("100", result.getLatestDataSnapshotId());
         assertEquals("UNKNOWN", result.getReadinessStatus());
         verify(assetStateRepository).save(any(AssetState.class));
     }
@@ -67,7 +68,9 @@ class AssetStateServiceTest {
 
         assertSame(state, result);
         assertEquals("101", state.getLatestSnapshotId());
+        assertEquals("101", state.getLatestDataSnapshotId());
         assertEquals(LocalDateTime.of(2026, 9, 12, 2, 0), state.getLatestWatermark());
+        assertEquals(LocalDateTime.of(2026, 9, 12, 2, 0), state.getLatestDataWatermark());
         verify(assetStateRepository).save(state);
     }
 
@@ -156,6 +159,48 @@ class AssetStateServiceTest {
                         "paimon.prod.orders.dt=2026-09-12"),
                 states.stream().map(AssetState::getAssetKey).toList());
         assertEquals(3, states.size());
+        assertEquals("PARTITION", states.get(1).getAssetType());
+    }
+
+    /** Verify compaction advances only physical table state and never creates partition progress. */
+    @Test
+    void projectAssetStatesFromEventKeepsCompactionOffDataTrack() {
+        AssetState state = assetState("100", LocalDateTime.of(2026, 9, 12, 1, 0));
+        LakehouseEvent event = event("101", LocalDateTime.of(2026, 9, 12, 2, 0), null);
+        event.setCommitKind("COMPACT");
+        event.setDataChange(false);
+        event.setPayloadJson(Map.of("changedPartitions", List.of("dt=2026-09-12")));
+        when(assetStateRepository.findByAssetKey("paimon.prod.orders")).thenReturn(Optional.of(state));
+        when(assetStateRepository.save(state)).thenReturn(state);
+
+        List<AssetState> states = assetStateService.projectAssetStatesFromEvent(event);
+
+        assertEquals(1, states.size());
+        assertEquals("101", state.getLatestSnapshotId());
+        assertEquals("100", state.getLatestDataSnapshotId());
+        assertEquals(LocalDateTime.of(2026, 9, 12, 1, 0), state.getLatestDataWatermark());
+        verify(assetStateRepository, never())
+                .findByAssetKey("paimon.prod.orders.dt=2026-09-12");
+    }
+
+    /** Verify an older durable data event can repair data state after a newer compaction. */
+    @Test
+    void updateAssetStateFromEventRepairsDataTrackWithoutRegressingObservedTrack() {
+        AssetState state = assetState("102", LocalDateTime.of(2026, 9, 12, 3, 0));
+        state.setLatestDataSnapshotId(null);
+        state.setLatestDataWatermark(null);
+        state.setLatestDataCommitTime(null);
+        LakehouseEvent event = event("101", LocalDateTime.of(2026, 9, 12, 2, 0), null);
+        when(assetStateRepository.findByAssetKey("paimon.prod.orders")).thenReturn(Optional.of(state));
+        when(assetStateRepository.save(state)).thenReturn(state);
+
+        AssetState result = assetStateService.updateAssetStateFromEvent(event);
+
+        assertSame(state, result);
+        assertEquals("102", state.getLatestSnapshotId());
+        assertEquals("101", state.getLatestDataSnapshotId());
+        assertEquals(LocalDateTime.of(2026, 9, 12, 2, 0), state.getLatestDataWatermark());
+        verify(assetStateRepository).save(state);
     }
 
     /**
@@ -212,7 +257,11 @@ class AssetStateServiceTest {
                 .databaseName("prod")
                 .tableName("orders")
                 .latestSnapshotId(snapshotId)
+                .latestDataSnapshotId(snapshotId)
                 .latestWatermark(watermark)
+                .latestDataWatermark(watermark)
+                .latestCommitTime(watermark)
+                .latestDataCommitTime(watermark)
                 .readinessStatus("UNKNOWN")
                 .build();
     }
@@ -231,6 +280,8 @@ class AssetStateServiceTest {
                 .partitionName(partitionName)
                 .snapshotId(snapshotId)
                 .schemaId("schema-1")
+                .commitKind("APPEND")
+                .dataChange(true)
                 .watermark(watermark)
                 .commitTime(watermark)
                 .build();
