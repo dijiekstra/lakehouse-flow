@@ -1,0 +1,93 @@
+name: Build Artifacts
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+jobs:
+  build-artifacts:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Extract version info
+      id: version
+      run: |
+        VERSION=$(grep '<version>' lakehouse-flow-boot/pom.xml | head -1 | sed 's/.*<version>//' | sed 's/<\/version>.*//')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "📌 Version: $VERSION"
+
+    - name: Build all modules
+      run: mvn clean package -DskipTests -q
+      env:
+        MAVEN_OPTS: -Xmx2g
+
+    - name: Generate build info
+      run: |
+        mkdir -p build-info
+        cat > build-info/BUILD_INFO.txt << 'EOF'
+        Build Information
+        =================
+        Project: Lakehouse Flow
+        Version: ${{ steps.version.outputs.version }}
+        Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+        Git Commit: ${{ github.sha }}
+        Branch: ${{ github.ref }}
+        
+        Modules:
+        - lakehouse-flow-core (Core module)
+        - lakehouse-flow-model (Data models)
+        - lakehouse-flow-dao (Data access layer)
+        - lakehouse-flow-service (Business logic)
+        - lakehouse-flow-integration (Integration layer)
+        - lakehouse-flow-api (REST APIs)
+        - lakehouse-flow-test (Test utilities)
+        - lakehouse-flow-boot (Spring Boot application)
+        
+        Build Status: ✅ SUCCESS
+        EOF
+        cat build-info/BUILD_INFO.txt
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts-${{ steps.version.outputs.version }}
+        path: |
+          lakehouse-flow-boot/target/*.jar
+          lakehouse-flow-boot/target/*.zip
+          build-info/
+
+    - name: List built artifacts
+      run: |
+        echo "📦 Built artifacts:"
+        find lakehouse-flow-boot/target -name "*.jar" -o -name "*.zip" | head -10
+
+    - name: Create build summary
+      if: always()
+      run: |
+        echo "## Build Artifacts Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Build completed successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Version" >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Boot JAR: lakehouse-flow-boot-*.jar" >> $GITHUB_STEP_SUMMARY

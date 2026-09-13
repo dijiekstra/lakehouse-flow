@@ -1,0 +1,83 @@
+name: Maven Build and Test
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        java-version: [ '17' ]
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_DB: lakehouse_flow
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Display Java version
+      run: java -version
+
+    - name: Build with Maven
+      run: mvn clean compile
+      env:
+        MAVEN_OPTS: -Xmx2g
+
+    - name: Run tests
+      run: mvn test
+      env:
+        MAVEN_OPTS: -Xmx2g
+        SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/lakehouse_flow
+        SPRING_DATASOURCE_USERNAME: postgres
+        SPRING_DATASOURCE_PASSWORD: postgres
+
+    - name: Build with Maven (including integration tests)
+      run: mvn verify
+      env:
+        MAVEN_OPTS: -Xmx2g
+        SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/lakehouse_flow
+        SPRING_DATASOURCE_USERNAME: postgres
+        SPRING_DATASOURCE_PASSWORD: postgres
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-${{ matrix.java-version }}
+        path: |
+          **/target/surefire-reports/
+          **/target/failsafe-reports/
+
+    - name: Publish test results
+      if: always()
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      with:
+        files: '**/target/*-reports/TEST-*.xml'
+        check_name: Test Results - Java ${{ matrix.java-version }}
