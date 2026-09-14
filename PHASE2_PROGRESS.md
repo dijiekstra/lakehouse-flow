@@ -2,7 +2,7 @@
 
 **最后更新**: 2026-09-14
 **基准用途**: 后续开发进度、差距检查和版本目标均以本文档为准。
-**当前推进项**: `LF-1.0` 功能开发与稳定性发布门槛已经闭合。整体 Testcontainers E2E 已覆盖真实 Flink CDC/Paimon 订单到 GMV 链路、全部发布关键 action、流式 writer 受控补数切换、`DATABASE_TABLE + HTTP`、四类正交结果、PostgreSQL 多 scheduler 恢复和 V22 到 V23 升级。下一阶段进入发布准备与真实环境试运行；容量基线仍按既定决策在生产负载下采集。
+**当前推进项**: `LF-1.0` 功能开发与稳定性发布门槛已经闭合，项目已进入 `1.0.0-SNAPSHOT` 发布线。整体 Testcontainers E2E 已覆盖真实 Flink CDC/Paimon 订单到 GMV 链路、全部发布关键 action、流式 writer 受控补数切换、`DATABASE_TABLE + HTTP`、四类正交结果、PostgreSQL 多 scheduler 恢复和 V22 到 V23 升级。下一步通过独立发布候选 workflow 重放完整门禁并生成带校验和的制品，然后进入受信环境试运行；容量基线仍按既定决策在生产负载下采集。
 
 ## 目标边界
 
@@ -128,6 +128,8 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 2. 可以使用 `./mvnw -pl <module> -am test` 做更快的定向反馈；不得用跳过测试的编译结果代替开发门槛。
 3. 当 DEV、OPS、OBS 工作收口并进入 STB 最终验收时，再一次性运行完整 `./mvnw clean verify`，覆盖所有 action、正式投递、结果语义和流批边界。
 4. 最近一次完整 E2E 通过记录继续作为有效基线；后续代码在集中验收前只能称为“单元验证通过”，不能宣称新增路径已经系统级验证。
+
+发布候选使用 `.github/workflows/lf1-release-candidate.yml`，只允许 `1.0.0-SNAPSHOT`、`1.0.0-rcN` 或 `1.0.0` 版本线，且 RC tag 必须与 Maven 版本完全一致。该 workflow 不带 `-DskipITs`，并校验可执行 Boot JAR、三份冻结契约、发布文档和 SHA-256 校验和。最终版本号和 `v1.0.0` 标签只能在 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 的候选验收与受信环境演练完成后创建。
 
 DEV/OPS/OBS/STB 最近验证：JDK 17.0.12 下 `./mvnw clean verify` 全部通过，共 396 个单元/启动测试和 8 个整体 Testcontainers E2E，failure/error/skip 均为 0。兼容性回归覆盖 35 个 `/api/v1` 路由、14 类 request 未知字段策略、两类 intent JSON Schema、V1-V23 migration checksum 和真实 V22 到 V23 升级。Service JaCoCo line 91.37%、branch 68.98%、method 91.42%。Prometheus 规则已通过 YAML 结构校验，但本机未安装 `promtool`，部署前仍需执行 PromQL 规则校验。LF-1.0 功能与稳定性门槛已经正式验收。
 

@@ -89,7 +89,7 @@ http://localhost:8080/v3/api-docs
 ```bash
 ./mvnw -pl lakehouse-flow-boot -am clean package
 source .mavenrc
-"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-1.0.0-SNAPSHOT.jar
 ```
 
 该 JAR 必须包含 Spring Boot `JarLauncher` 和 `BOOT-INF/lib`。默认分支 GitHub Actions 会在上传 artifact 前再次校验这些结构。

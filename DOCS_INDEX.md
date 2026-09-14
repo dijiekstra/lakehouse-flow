@@ -9,7 +9,7 @@
 1. `PHASE2_PROGRESS.md`：版本目标、优先级、当前完成度、差距和验证快照的唯一真源。
 2. `ARCHITECTURE.md`、`SCHEDULING_MODEL_DESIGN.md`：当前架构与对象模型不变量。
 3. `SCHEDULING_INTENT_CONTRACT.md`、`LF1_COMPATIBILITY.md`：Lakehouse Flow 与下游之间的协议、REST 和版本兼容真源。
-4. `OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`、`OBSERVABILITY.md`：生产接入、故障处置、数据库操作、指标与告警边界。
+4. `RELEASE_CHECKLIST.md`、`OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`、`OBSERVABILITY.md`：发布、生产接入、故障处置、数据库操作、指标与告警边界。
 5. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
 6. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
 
@@ -25,6 +25,7 @@
 | [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | 模型真源 | FlowPlan、Node、实例、action、补数和 DAG 的语义 |
 | [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 协议真源 | 数据处理与作业控制两类出站意图如何投递、幂等，以及目标 snapshot 必须写什么 |
 | [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md) | 兼容真源 | `/api/v1`、两类 intent、未知字段和 V1～V23 migration 如何演进 |
+| [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) | 发布验收清单 | 如何生成、核验、试运行和最终发布 LF-1.0 |
 | [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) | 生产运维手册 | 如何配置投递与 source、启动/重启 writer，以及处置阻塞、死信和补数 |
 | [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md) | 数据库运维策略 | 如何升级、备份、恢复 PostgreSQL，以及哪些数据可以归档清理 |
 | [OBSERVABILITY.md](./OBSERVABILITY.md) | 可观测性与告警 | 指标代表什么、Prometheus 规则如何加载、告警去哪里取证 |
@@ -93,14 +94,16 @@
 3. `SCHEDULING_MODEL_DESIGN.md` 的不变量
 4. `ARCHITECTURE.md` 的事务、互斥和失败关闭路径
 5. `SCHEDULING_INTENT_CONTRACT.md` 的归因、Flink/Paimon writer 和租约要求
+6. `RELEASE_CHECKLIST.md` 的候选制品、试运行和最终发布门禁
 
 ### 生产运维
 
 1. `OPERATIONS_RUNBOOK.md`
-2. `OBSERVABILITY.md`
-3. `DATABASE_OPERATIONS.md`
-4. `SCHEDULING_INTENT_CONTRACT.md`
-5. `PHASE2_PROGRESS.md`
+2. `RELEASE_CHECKLIST.md`
+3. `OBSERVABILITY.md`
+4. `DATABASE_OPERATIONS.md`
+5. `SCHEDULING_INTENT_CONTRACT.md`
+6. `PHASE2_PROGRESS.md`
 
 ## 更新规则
 

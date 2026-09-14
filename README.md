@@ -3,7 +3,7 @@
 [![Maven Build and Test](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/maven-build.yml/badge.svg?branch=master)](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/maven-build.yml)
 [![Code Quality Checks](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/code-quality.yml/badge.svg?branch=master)](https://github.com/dijiekstra/lakehouse-flow/actions/workflows/code-quality.yml)
 
-Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
+Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度系统**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
 当前仓库已经通过 `LF-1.0` 单团队受信环境的功能与稳定性门槛，但仍需在真实部署中形成容量基线。它具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递具备 claim 租约、fencing、退避重试和死信审计。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，契约演进见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
 
@@ -290,7 +290,7 @@ cd lakehouse-flow-boot
 ```bash
 ./mvnw clean package -DskipTests
 source .mavenrc
-"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-1.0.0-SNAPSHOT.jar
 ```
 
 健康检查：
@@ -318,7 +318,7 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 
 ## 下一步建议
 
-1. 以已冻结的 LF-1.0 REST、intent payload 和 V1-V23 schema 制作首个发布候选。
-2. 在受信试运行环境接入真实执行平台的 `DATABASE_TABLE` 或 HTTP 消费端，并完成 runbook 演练。
+1. 手动运行 `LF-1.0 Release Candidate` workflow，以完整 Testcontainers E2E、冻结契约和制品校验生成首个发布候选。
+2. 按 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 在受信试运行环境接入真实执行平台的 `DATABASE_TABLE` 或 HTTP 消费端，并完成 runbook 演练。
 3. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
 4. LF-1.1+ 再推进可信身份/RBAC、Iceberg/Hudi、具体 MQ 产品绑定和 Web 运维视图。

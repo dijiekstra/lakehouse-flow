@@ -70,7 +70,7 @@ cd lakehouse-flow-boot
 ```bash
 ./mvnw clean package -DskipTests
 source .mavenrc
-"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-1.0.0-SNAPSHOT.jar
 ```
 
 健康检查：
@@ -113,4 +113,4 @@ lakehouse-flow-e2e          whole-system Testcontainers E2E assembly
 
 不要在本开发指南中复制阶段待办。下一推进项、优先级和退出标准只读取 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md)，以免已经完成的工作继续出现在旧清单中。
 
-当前不可退让的开发顺序是：先检查进度基准中的四态清单和权威架构，再阅读相关实现与测试，完成修改后使用 Maven Wrapper 执行开发期验证。日常 CI 可使用 `-DskipITs`，但发布候选和任何冻结契约变更必须集中运行完整 Testcontainers E2E。不得放宽 `SchedulingIntent` 的 task 非空约束来承载作业生命周期，也不得把 Flink/Spark 类型带入 Flow 或通用 intent。
+当前不可退让的开发顺序是：先检查进度基准中的四态清单和权威架构，再阅读相关实现与测试，完成修改后使用 Maven Wrapper 执行开发期验证。日常 CI 可使用 `-DskipITs`，但发布候选和任何冻结契约变更必须通过 `LF-1.0 Release Candidate` workflow 集中运行完整 Testcontainers E2E。不得放宽 `SchedulingIntent` 的 task 非空约束来承载作业生命周期，也不得把 Flink/Spark 类型带入 Flow 或通用 intent。
