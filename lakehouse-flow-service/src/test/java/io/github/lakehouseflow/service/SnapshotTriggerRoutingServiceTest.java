@@ -2,8 +2,13 @@ package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.dao.SchedulingIntentRepository;
+import io.github.lakehouseflow.dao.JobControlIntentRepository;
+import io.github.lakehouseflow.dao.WriterJobBindingRepository;
+import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.SchedulingIntent;
+import io.github.lakehouseflow.model.WriterJobBinding;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -22,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 /**
  * Tests snapshot origin routing between natural and action-owned progression.
@@ -36,8 +42,24 @@ class SnapshotTriggerRoutingServiceTest {
     @Mock
     private SchedulingIntentRepository schedulingIntentRepository;
 
+    @Mock
+    private JobControlIntentRepository jobControlIntentRepository;
+
+    @Mock
+    private WriterJobBindingRepository writerJobBindingRepository;
+
     @InjectMocks
     private SnapshotTriggerRoutingService routingService;
+
+    /** Configure the current writer generation used by data-intent routing tests. */
+    @BeforeEach
+    void setUpCurrentWriter() {
+        lenient().when(writerJobBindingRepository.findByWriterJobKey("writer.prod.orders"))
+                .thenReturn(Optional.of(WriterJobBinding.builder()
+                        .writerJobKey("writer.prod.orders")
+                        .currentWriterEpoch(7L)
+                        .build()));
+    }
 
     /**
      * Verify an external data commit remains eligible for natural scheduling.
@@ -160,6 +182,61 @@ class SnapshotTriggerRoutingServiceTest {
         assertEquals("EXTERNAL", route.originType());
     }
 
+    /** Verify a current platform-controlled writer snapshot may drive natural progression. */
+    @Test
+    void classifyAllowsCurrentJobControlWriterSnapshot() {
+        String controlKey = "job-control:writer.prod.orders:7";
+        JobControlIntent intent = JobControlIntent.builder()
+                .intentKey(controlKey)
+                .writerJobKey("writer.prod.orders")
+                .writerEpoch(7L)
+                .tableAssetKey("paimon.prod.orders")
+                .build();
+        when(jobControlIntentRepository.findByIntentKey(controlKey)).thenReturn(Optional.of(intent));
+        when(writerJobBindingRepository.findByWriterJobKey("writer.prod.orders"))
+                .thenReturn(Optional.of(WriterJobBinding.builder()
+                        .writerJobKey("writer.prod.orders")
+                        .currentWriterEpoch(7L)
+                        .currentControlIntentKey(controlKey)
+                        .build()));
+        Map<String, String> properties = Map.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY, controlKey,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "7");
+
+        SnapshotTriggerRoutingService.SnapshotTriggerRoute route = routingService.classify(
+                event("APPEND", properties, List.of("dt=2026-09-01")));
+
+        assertTrue(route.naturalProgressionAllowed());
+        assertEquals("LAKEHOUSE_FLOW_JOB_CONTROL", route.originType());
+        assertNull(route.intentBizDate());
+    }
+
+    /** Verify a superseded writer generation cannot trigger new scheduling decisions. */
+    @Test
+    void classifySuppressesStaleJobControlWriterSnapshot() {
+        String controlKey = "job-control:writer.prod.orders:6";
+        when(jobControlIntentRepository.findByIntentKey(controlKey)).thenReturn(Optional.of(
+                JobControlIntent.builder()
+                        .intentKey(controlKey)
+                        .writerJobKey("writer.prod.orders")
+                        .writerEpoch(6L)
+                        .tableAssetKey("paimon.prod.orders")
+                        .build()));
+        Map<String, String> properties = Map.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY, controlKey,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "6");
+
+        SnapshotTriggerRoutingService.SnapshotTriggerRoute route = routingService.classify(
+                event("APPEND", properties, List.of("dt=2026-09-01")));
+
+        assertFalse(route.naturalProgressionAllowed());
+        assertEquals("LAKEHOUSE_FLOW_STALE_WRITER", route.originType());
+    }
+
     /**
      * Build a scheduling intent fixture.
      *
@@ -172,6 +249,8 @@ class SnapshotTriggerRoutingServiceTest {
                 .triggerType(triggerType)
                 .targetAssetKey(TARGET_ASSET)
                 .bizDate(BIZ_DATE)
+                .writerJobKey("writer.prod.orders")
+                .writerEpoch(7L)
                 .build();
     }
 
@@ -185,6 +264,8 @@ class SnapshotTriggerRoutingServiceTest {
         return Map.of(
                 SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
                 SnapshotEvidenceContract.INTENT_KEY_PROPERTY, INTENT_KEY,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "7",
                 SnapshotEvidenceContract.TARGET_ASSET_PROPERTY, TARGET_ASSET,
                 SnapshotEvidenceContract.BIZ_DATE_PROPERTY, "2026-09-01",
                 SnapshotEvidenceContract.FINAL_PROPERTY, finalValue);

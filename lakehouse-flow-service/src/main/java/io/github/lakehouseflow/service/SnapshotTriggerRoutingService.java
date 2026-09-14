@@ -1,9 +1,13 @@
 package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
+import io.github.lakehouseflow.dao.JobControlIntentRepository;
 import io.github.lakehouseflow.dao.SchedulingIntentRepository;
+import io.github.lakehouseflow.dao.WriterJobBindingRepository;
+import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.SchedulingIntent;
+import io.github.lakehouseflow.model.WriterJobBinding;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +38,8 @@ public class SnapshotTriggerRoutingService {
             "MANUAL_ACTION");
 
     private final SchedulingIntentRepository schedulingIntentRepository;
+    private final JobControlIntentRepository jobControlIntentRepository;
+    private final WriterJobBindingRepository writerJobBindingRepository;
 
     /**
      * Classify one durable snapshot before natural DAG and FlowPlan evaluation.
@@ -63,8 +69,7 @@ public class SnapshotTriggerRoutingService {
 
         String intentKey = property(properties, SnapshotEvidenceContract.INTENT_KEY_PROPERTY).orElse(null);
         if (isBlank(intentKey)) {
-            return SnapshotTriggerRoute.suppressed("LAKEHOUSE_FLOW_UNATTRIBUTED", null,
-                    "Lakehouse Flow source marker has no intent key");
+            return classifyJobControlSnapshot(event, properties);
         }
 
         Optional<SchedulingIntent> intent = schedulingIntentRepository.findByIntentKey(intentKey);
@@ -90,6 +95,36 @@ public class SnapshotTriggerRoutingService {
                 "Final snapshot from a natural scheduling intent may drive downstream plans");
     }
 
+    /** Classify a snapshot carrying only writer-generation control attribution. */
+    private SnapshotTriggerRoute classifyJobControlSnapshot(LakehouseEvent event, Map<?, ?> properties) {
+        String controlIntentKey = property(
+                properties,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY).orElse(null);
+        if (isBlank(controlIntentKey)) {
+            return SnapshotTriggerRoute.suppressed("LAKEHOUSE_FLOW_UNATTRIBUTED", null,
+                    "Lakehouse Flow source marker has no data or job-control intent key");
+        }
+        Optional<JobControlIntent> intent = jobControlIntentRepository.findByIntentKey(controlIntentKey);
+        if (intent.isEmpty()) {
+            return SnapshotTriggerRoute.suppressed("LAKEHOUSE_FLOW_JOB_CONTROL_ORPHAN", controlIntentKey,
+                    "Writer snapshot control key does not belong to a persisted intent");
+        }
+        JobControlIntent matchedIntent = intent.get();
+        if (!matchesJobControlSnapshot(event, properties, matchedIntent)
+                || !isCurrentWriterGeneration(
+                        matchedIntent.getWriterJobKey(),
+                        matchedIntent.getWriterEpoch(),
+                        matchedIntent.getIntentKey())) {
+            return SnapshotTriggerRoute.suppressed("LAKEHOUSE_FLOW_STALE_WRITER", controlIntentKey,
+                    "Writer snapshot does not match the currently authorized generation");
+        }
+        return SnapshotTriggerRoute.natural(
+                "LAKEHOUSE_FLOW_JOB_CONTROL",
+                controlIntentKey,
+                null,
+                "Current platform-controlled writer data may drive natural scheduling");
+    }
+
     /**
      * Check the complete final-snapshot attribution contract for routing.
      *
@@ -104,6 +139,14 @@ public class SnapshotTriggerRoutingService {
             SchedulingIntent intent) {
         return isAcceptedDataCommit(event)
                 && matchesTargetTable(event, intent.getTargetAssetKey())
+                && isCurrentWriterGeneration(intent.getWriterJobKey(), intent.getWriterEpoch(), null)
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                        intent.getWriterJobKey())
+                && intent.getWriterEpoch() != null
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                        Long.toString(intent.getWriterEpoch()))
                 && propertyEquals(properties,
                         SnapshotEvidenceContract.TARGET_ASSET_PROPERTY,
                         intent.getTargetAssetKey())
@@ -115,6 +158,41 @@ public class SnapshotTriggerRoutingService {
                         SnapshotEvidenceContract.FINAL_PROPERTY,
                         SnapshotEvidenceContract.FINAL_VALUE)
                 && changesExpectedPartition(event, extractPartition(intent.getTargetAssetKey()));
+    }
+
+    /** Match a current control intent to one target-table business snapshot. */
+    private boolean matchesJobControlSnapshot(
+            LakehouseEvent event,
+            Map<?, ?> properties,
+            JobControlIntent intent) {
+        return isAcceptedDataCommit(event)
+                && matchesTargetTable(event, intent.getTableAssetKey())
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY,
+                        intent.getIntentKey())
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                        intent.getWriterJobKey())
+                && intent.getWriterEpoch() != null
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                        Long.toString(intent.getWriterEpoch()));
+    }
+
+    /** Verify the event writer epoch has not been superseded by a newer generation. */
+    private boolean isCurrentWriterGeneration(
+            String writerJobKey,
+            Long writerEpoch,
+            String requiredControlIntentKey) {
+        if (isBlank(writerJobKey) || writerEpoch == null || writerEpoch <= 0) {
+            return false;
+        }
+        Optional<WriterJobBinding> binding = writerJobBindingRepository.findByWriterJobKey(writerJobKey);
+        if (binding.isEmpty() || !writerEpoch.equals(binding.get().getCurrentWriterEpoch())) {
+            return false;
+        }
+        return requiredControlIntentKey == null
+                || requiredControlIntentKey.equals(binding.get().getCurrentControlIntentKey());
     }
 
     /**

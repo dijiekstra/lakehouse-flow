@@ -116,6 +116,7 @@ class FlowPlanControllerTest {
                         List.of("ods_orders"),
                         Map.of("asset", "paimon.ods.orders"),
                         "paimon.dwd.orders",
+                        "writer.dwd.orders",
                         Map.of("timeoutMinutes", 30),
                         20));
 
@@ -126,6 +127,7 @@ class FlowPlanControllerTest {
         assertEquals("STREAMING", captor.getValue().processingMode());
         assertEquals("dwd_orders", response.nodeCode());
         assertEquals("paimon.dwd.orders", response.outputAssetKey());
+        assertEquals("writer.dwd.orders", response.writerJobKey());
     }
 
     /**
@@ -240,6 +242,7 @@ class FlowPlanControllerTest {
                 .dependsOnNodes(List.of("ods_orders"))
                 .inputDependencySpecJson(Map.of("asset", "paimon.ods.orders"))
                 .outputAssetKey("paimon.dwd.orders")
+                .writerJobKey("writer.dwd.orders")
                 .confirmationPolicyJson(Map.of("timeoutMinutes", 30))
                 .sortOrder(20)
                 .createdAt(NOW)

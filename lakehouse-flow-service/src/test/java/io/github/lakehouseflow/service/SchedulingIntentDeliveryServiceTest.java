@@ -146,6 +146,19 @@ class SchedulingIntentDeliveryServiceTest {
         verify(schedulingIntentDeliveryRepository, never()).save(any());
     }
 
+    /** Verify a repeated acknowledgement is idempotent and does not rewrite audit timestamps. */
+    @Test
+    void recordPublishedAcceptsAlreadyPublishedDeliveryWithoutRewrite() {
+        SchedulingIntentDelivery delivery = claimedDelivery(null, 1);
+        delivery.setStatus(SchedulingIntentDeliveryStatuses.PUBLISHED);
+        delivery.setPublishedAt(LocalDateTime.now().minusMinutes(1));
+        when(schedulingIntentDeliveryRepository.findByIdForUpdate(201L)).thenReturn(Optional.of(delivery));
+
+        assertTrue(schedulingIntentDeliveryService.recordPublished(201L, "old-claim"));
+
+        verify(schedulingIntentDeliveryRepository, never()).save(any());
+    }
+
     /** Verify a failed attempt enters retry wait with bounded exponential delay. */
     @Test
     void recordFailureSchedulesRetry() {

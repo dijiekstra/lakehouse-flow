@@ -15,6 +15,7 @@ import java.util.Map;
  * @param dependsOnNodes upstream node codes
  * @param inputDependencySpecJson input asset dependency conditions
  * @param outputAssetKey target asset expected to advance after downstream consumption
+ * @param writerJobKey stable platform writer owning the output physical table
  * @param confirmationPolicyJson node-level snapshot confirmation policy
  * @param sortOrder deterministic graph ordering hint
  */
@@ -26,6 +27,7 @@ public record CreateScheduleNodeRequest(
         List<String> dependsOnNodes,
         Map<String, Object> inputDependencySpecJson,
         String outputAssetKey,
+        String writerJobKey,
         Map<String, Object> confirmationPolicyJson,
         Integer sortOrder) {
 }

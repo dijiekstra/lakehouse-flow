@@ -37,10 +37,14 @@
         <flyway.version>9.22.0</flyway.version>
         <hibernate.version>6.3.1.Final</hibernate.version>
         <paimon.version>1.3.1</paimon.version>
+        <flink.version>1.20.3</flink.version>
+        <flink-cdc.version>3.4.0</flink-cdc.version>
+        <hadoop.version>3.3.6</hadoop.version>
+        <mysql-connector.version>8.0.33</mysql-connector.version>
 
         <!-- Testing -->
         <junit.version>5.9.3</junit.version>
-        <testcontainers.version>1.19.3</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <mockito.version>5.3.1</mockito.version>
 
         <!-- Logging & Monitoring -->
@@ -61,6 +65,7 @@
         <!-- Build plugins -->
         <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.0.0</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.0.0</maven-failsafe-plugin.version>
         <maven-shade-plugin.version>3.4.1</maven-shade-plugin.version>
         <maven-assembly-plugin.version>3.6.0</maven-assembly-plugin.version>
         <jacoco-maven-plugin.version>0.8.10</jacoco-maven-plugin.version>
@@ -68,6 +73,7 @@
 
     <modules>
         <module>lakehouse-flow-common</module>
+        <module>lakehouse-flow-flink-paimon</module>
         <module>lakehouse-flow-model</module>
         <module>lakehouse-flow-dao</module>
         <module>lakehouse-flow-service</module>
@@ -76,10 +82,21 @@
         <module>lakehouse-flow-integration</module>
         <module>lakehouse-flow-test</module>
         <module>lakehouse-flow-boot</module>
+        <module>lakehouse-flow-e2e-jobs</module>
+        <module>lakehouse-flow-e2e</module>
     </modules>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Testcontainers BOM must precede Spring Boot so its newer Docker client wins. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <!-- Spring Boot BOM -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
@@ -94,15 +111,6 @@
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
                 <version>${spring-cloud.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <!-- Testcontainers BOM -->
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers-bom</artifactId>
-                <version>${testcontainers.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

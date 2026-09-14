@@ -18,7 +18,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * Owns reliable transport state for scheduling intent publication.
@@ -34,7 +33,6 @@ public class SchedulingIntentDeliveryService {
 
     private static final int DEFAULT_BATCH_SIZE = 100;
     private static final int MAX_BATCH_SIZE = 500;
-    private static final int MAX_ERROR_LENGTH = 4000;
     private static final Set<String> WAITING_STATUSES = Set.of(
             SchedulingIntentDeliveryStatuses.PENDING,
             SchedulingIntentDeliveryStatuses.RETRY_WAIT);
@@ -87,19 +85,14 @@ public class SchedulingIntentDeliveryService {
         if (SchedulingIntentDeliveryStatuses.PUBLISHED.equals(delivery.getStatus())) {
             return true;
         }
-        if (!ownsClaim(delivery, claimToken)) {
-            return false;
+        boolean recorded = IntentDeliveryReliability.recordPublished(
+                delivery,
+                claimToken,
+                LocalDateTime.now());
+        if (recorded) {
+            schedulingIntentDeliveryRepository.save(delivery);
         }
-
-        LocalDateTime now = LocalDateTime.now();
-        delivery.setStatus(SchedulingIntentDeliveryStatuses.PUBLISHED);
-        delivery.setPublishedAt(now);
-        delivery.setLastError(null);
-        delivery.setNextAttemptAt(null);
-        delivery.setDeadLetteredAt(null);
-        clearClaim(delivery);
-        schedulingIntentDeliveryRepository.save(delivery);
-        return true;
+        return recorded;
     }
 
     /**
@@ -131,28 +124,18 @@ public class SchedulingIntentDeliveryService {
         }
 
         SchedulingIntentDelivery delivery = lockDelivery(deliveryId);
-        if (!ownsClaim(delivery, claimToken)) {
-            return SchedulingIntentDeliveryFailureResult.STALE;
-        }
-
-        LocalDateTime now = LocalDateTime.now();
-        delivery.setLastError(truncateError(error));
-        clearClaim(delivery);
-        int attemptCount = normalizeAttemptCount(delivery.getAttemptCount());
-        delivery.setAttemptCount(attemptCount);
-        if (attemptCount >= maxAttempts || deadlineReached(delivery, now)) {
-            deadLetter(delivery, now, delivery.getLastError());
+        SchedulingIntentDeliveryFailureResult result = IntentDeliveryReliability.recordFailure(
+                delivery,
+                claimToken,
+                error,
+                maxAttempts,
+                normalizedInitial,
+                normalizedMaximum,
+                LocalDateTime.now());
+        if (result != SchedulingIntentDeliveryFailureResult.STALE) {
             schedulingIntentDeliveryRepository.save(delivery);
-            return SchedulingIntentDeliveryFailureResult.EXHAUSTED;
-        } else {
-            delivery.setStatus(SchedulingIntentDeliveryStatuses.RETRY_WAIT);
-            delivery.setNextAttemptAt(now.plus(calculateBackoff(
-                    attemptCount,
-                    normalizedInitial,
-                    normalizedMaximum)));
         }
-        schedulingIntentDeliveryRepository.save(delivery);
-        return SchedulingIntentDeliveryFailureResult.RETRY_SCHEDULED;
+        return result;
     }
 
     /** Claim one candidate or dead-letter it when its publication window ended. */
@@ -162,31 +145,26 @@ public class SchedulingIntentDeliveryService {
             Duration claimLease,
             LocalDateTime now) {
 
-        if (deadlineReached(delivery, now)) {
-            deadLetter(delivery, now, "Publication admission expired before transport acknowledgement");
-            schedulingIntentDeliveryRepository.save(delivery);
+        java.util.Optional<String> claimToken = IntentDeliveryReliability.claim(
+                delivery,
+                claimOwner,
+                claimLease,
+                now);
+        schedulingIntentDeliveryRepository.save(delivery);
+        if (claimToken.isEmpty()) {
             return null;
         }
 
         SchedulingIntent intent = schedulingIntentRepository.findById(delivery.getSchedulingIntentId())
                 .orElseThrow(() -> new IllegalStateException(
                         "Scheduling intent not found for delivery: " + delivery.getId()));
-        String claimToken = UUID.randomUUID().toString();
-        delivery.setStatus(SchedulingIntentDeliveryStatuses.PUBLISHING);
-        delivery.setAttemptCount(normalizeAttemptCount(delivery.getAttemptCount()) + 1);
-        delivery.setLastAttemptAt(now);
-        delivery.setNextAttemptAt(null);
-        delivery.setClaimOwner(claimOwner);
-        delivery.setClaimToken(claimToken);
-        delivery.setClaimExpiresAt(now.plus(claimLease));
-        schedulingIntentDeliveryRepository.save(delivery);
 
         Map<String, Object> payload = intent.getInstructionPayloadJson() == null
                 ? Map.of()
                 : Map.copyOf(new LinkedHashMap<>(intent.getInstructionPayloadJson()));
         return new SchedulingIntentPublication(
                 delivery.getId(),
-                claimToken,
+                claimToken.get(),
                 delivery.getChannel(),
                 delivery.getDestination(),
                 intent.getId(),
@@ -202,51 +180,6 @@ public class SchedulingIntentDeliveryService {
         }
         return schedulingIntentDeliveryRepository.findByIdForUpdate(deliveryId)
                 .orElseThrow(() -> new IllegalArgumentException("Scheduling intent delivery not found: " + deliveryId));
-    }
-
-    /** Check that a completion belongs to the current fenced in-flight claim. */
-    private boolean ownsClaim(SchedulingIntentDelivery delivery, String claimToken) {
-        return SchedulingIntentDeliveryStatuses.PUBLISHING.equals(delivery.getStatus())
-                && claimToken != null
-                && claimToken.equals(delivery.getClaimToken());
-    }
-
-    /** Clear all ephemeral claim ownership fields before leaving PUBLISHING. */
-    private void clearClaim(SchedulingIntentDelivery delivery) {
-        delivery.setClaimOwner(null);
-        delivery.setClaimToken(null);
-        delivery.setClaimExpiresAt(null);
-    }
-
-    /** Move one transport to its terminal dead-letter audit state. */
-    private void deadLetter(SchedulingIntentDelivery delivery, LocalDateTime now, String reason) {
-        clearClaim(delivery);
-        delivery.setStatus(SchedulingIntentDeliveryStatuses.EXHAUSTED);
-        delivery.setLastError(truncateError(reason));
-        delivery.setNextAttemptAt(null);
-        delivery.setDeadLetteredAt(now);
-    }
-
-    /** Determine whether the downstream admission deadline has been reached. */
-    private boolean deadlineReached(SchedulingIntentDelivery delivery, LocalDateTime now) {
-        return delivery.getDeliverBefore() != null && !now.isBefore(delivery.getDeliverBefore());
-    }
-
-    /** Calculate bounded exponential backoff using the current attempt number. */
-    private Duration calculateBackoff(int attemptCount, Duration initialBackoff, Duration maximumBackoff) {
-        int exponent = Math.max(0, Math.min(attemptCount - 1, 30));
-        long multiplier = 1L << exponent;
-        try {
-            Duration calculated = initialBackoff.multipliedBy(multiplier);
-            return calculated.compareTo(maximumBackoff) > 0 ? maximumBackoff : calculated;
-        } catch (ArithmeticException ignored) {
-            return maximumBackoff;
-        }
-    }
-
-    /** Normalize a nullable legacy attempt counter. */
-    private int normalizeAttemptCount(Integer attemptCount) {
-        return attemptCount == null ? 0 : attemptCount;
     }
 
     /** Validate and normalize a scheduler-owned claim batch size. */
@@ -274,11 +207,4 @@ public class SchedulingIntentDeliveryService {
         return value.trim();
     }
 
-    /** Keep transport failures bounded for API and log safety. */
-    private String truncateError(String error) {
-        String normalized = error == null || error.isBlank() ? "Unspecified transport failure" : error.trim();
-        return normalized.length() <= MAX_ERROR_LENGTH
-                ? normalized
-                : normalized.substring(0, MAX_ERROR_LENGTH);
-    }
 }

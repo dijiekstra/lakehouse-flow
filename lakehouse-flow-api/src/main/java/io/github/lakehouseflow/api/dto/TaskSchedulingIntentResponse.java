@@ -22,6 +22,8 @@ import java.util.Map;
  * @param bizDate business date for the scheduling decision
  * @param targetAssetKey managed asset used for snapshot confirmation
  * @param baselineSnapshotId snapshot frozen before publication
+ * @param writerJobKey stable writer owning the target physical table
+ * @param writerEpoch fenced writer generation
  * @param processingMode engine-neutral STREAMING or BATCH mode
  * @param inputSnapshotVector complete frozen input evidence
  * @param instructionPayload complete immutable downstream instruction
@@ -52,6 +54,8 @@ public record TaskSchedulingIntentResponse(
         LocalDateTime bizDate,
         String targetAssetKey,
         String baselineSnapshotId,
+        String writerJobKey,
+        Long writerEpoch,
         String processingMode,
         List<Map<String, Object>> inputSnapshotVector,
         Map<String, Object> instructionPayload,

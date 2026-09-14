@@ -100,6 +100,9 @@ class SchedulingIntentServiceTest {
     @Mock
     private InputSnapshotEvidenceService inputSnapshotEvidenceService;
 
+    @Mock
+    private WriterJobBindingService writerJobBindingService;
+
     @InjectMocks
     private SchedulingIntentService schedulingIntentService;
 
@@ -143,6 +146,10 @@ class SchedulingIntentServiceTest {
                         invocation.getArgument(2),
                         invocation.getArgument(3),
                         LocalDateTime.now().plusHours(1)));
+        lenient().when(writerJobBindingService.reserveDataIntent(
+                        anyLong(), anyString(), anyString(), anyString(), any(LocalDateTime.class)))
+                .thenReturn(new WriterJobBindingService.WriterLease(
+                        true, "writer.dwd.orders", 3L, null));
     }
 
     /** Verify an internal scan publishes a bounded set of eligible ready tasks. */
@@ -653,6 +660,8 @@ class SchedulingIntentServiceTest {
                 .bizDate(LocalDateTime.of(2026, 9, 13, 0, 0))
                 .targetAssetKey(TARGET_ASSET)
                 .baselineSnapshotId("100")
+                .writerJobKey("writer.dwd.orders")
+                .writerEpoch(3L)
                 .processingMode("BATCH")
                 .inputSnapshotVectorJson(List.of())
                 .instructionPayloadJson(Map.of("contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION))
@@ -671,6 +680,9 @@ class SchedulingIntentServiceTest {
         assertEquals(SnapshotEvidenceContract.REQUIRED_CHANGE_TYPE,
                 snapshotEvidence.get("requiredSnapshotChangeType"));
         assertEquals(intentKey, requiredProperties.get(SnapshotEvidenceContract.INTENT_KEY_PROPERTY));
+        assertEquals("writer.dwd.orders",
+                requiredProperties.get(SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY));
+        assertEquals("3", requiredProperties.get(SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY));
         assertEquals(TARGET_ASSET,
                 requiredProperties.get(SnapshotEvidenceContract.TARGET_ASSET_PROPERTY));
         assertEquals("2026-09-13",

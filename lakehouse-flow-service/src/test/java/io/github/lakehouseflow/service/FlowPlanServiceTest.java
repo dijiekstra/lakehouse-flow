@@ -50,6 +50,9 @@ class FlowPlanServiceTest {
     @Mock
     private FlowPlanPolicyService flowPlanPolicyService;
 
+    @Mock
+    private WriterJobBindingService writerJobBindingService;
+
     @InjectMocks
     private FlowPlanService flowPlanService;
 
@@ -138,12 +141,14 @@ class FlowPlanServiceTest {
                 List.of("node.ods_orders", "node.ods_orders", " "),
                 Map.of("assetKey", "paimon.ods.orders"),
                 "paimon.dwd.orders",
+                "writer.dwd.orders",
                 Map.of("mode", "snapshot_advance"),
                 10));
 
         assertEquals(List.of("node.ods_orders"), result.getDependsOnNodes());
         assertEquals("STREAMING", result.getProcessingMode());
         assertEquals("paimon.dwd.orders", result.getOutputAssetKey());
+        assertEquals("writer.dwd.orders", result.getWriterJobKey());
         assertEquals("snapshot_advance", result.getConfirmationPolicyJson().get("mode"));
         assertEquals(10, result.getSortOrder());
     }
@@ -168,6 +173,7 @@ class FlowPlanServiceTest {
                         List.of(),
                         Map.of(),
                         " ",
+                        "writer.bad",
                         Map.of(),
                         1)));
     }
@@ -197,6 +203,7 @@ class FlowPlanServiceTest {
         verify(flowPlanRepository).save(flowPlan);
         verify(flowPlanGraphService).validateAndOrder(any());
         verify(flowPlanPolicyService).validateVersionPolicies(any(), any());
+        verify(writerJobBindingService).validatePublishedNodes(any());
     }
 
     /** Verify an invalid runtime policy cannot become a published definition. */
@@ -288,6 +295,7 @@ class FlowPlanServiceTest {
                 .nodeName("DWD Orders")
                 .nodeType(ScheduleNodeTypes.ASSET_OUTPUT)
                 .outputAssetKey("paimon.dwd.orders")
+                .writerJobKey("writer.dwd.orders")
                 .build();
     }
 }

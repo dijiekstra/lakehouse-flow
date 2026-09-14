@@ -4,6 +4,7 @@ import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.dao.LakehouseEventRepository;
 import io.github.lakehouseflow.model.EvaluationResult;
 import io.github.lakehouseflow.model.LakehouseEvent;
+import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.SchedulingIntent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -114,6 +115,52 @@ class SnapshotEvidenceServiceTest {
                 () -> snapshotEvidenceService.evaluateIntentProgress(intent));
     }
 
+    /** Verify job-control confirmation requires the exact writer key, epoch, and control key. */
+    @Test
+    void confirmsJobControlWriterGenerationSnapshot() {
+        String controlKey = "job-control:writer.prod.orders:7";
+        JobControlIntent intent = JobControlIntent.builder()
+                .intentKey(controlKey)
+                .writerJobKey("writer.prod.orders")
+                .writerEpoch(7L)
+                .tableAssetKey("paimon.prod.orders")
+                .baselineSnapshotId("100")
+                .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
+                .build();
+        stubEvents(event("101", "APPEND", Map.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY, controlKey,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "7"), List.of()));
+
+        EvaluationResult result = snapshotEvidenceService.evaluateJobControlProgress(intent);
+
+        assertTrue(result.getSatisfied());
+        assertEquals("101", result.getSnapshotId());
+    }
+
+    /** Verify a maintenance snapshot cannot prove a controlled writer generation produced data. */
+    @Test
+    void jobControlIgnoresMaintenanceSnapshot() {
+        JobControlIntent intent = JobControlIntent.builder()
+                .intentKey("job-control:writer.prod.orders:7")
+                .writerJobKey("writer.prod.orders")
+                .writerEpoch(7L)
+                .tableAssetKey("paimon.prod.orders")
+                .baselineSnapshotId("100")
+                .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
+                .build();
+        stubEvents(event("101", "COMPACT", Map.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY, intent.getIntentKey(),
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "7"), List.of()));
+
+        EvaluationResult result = snapshotEvidenceService.evaluateJobControlProgress(intent);
+
+        assertFalse(result.getSatisfied());
+    }
+
     /** Stub one ordered physical-table event sequence. */
     private void stubEvents(LakehouseEvent... events) {
         when(lakehouseEventRepository
@@ -132,6 +179,8 @@ class SnapshotEvidenceServiceTest {
                 .bizDate(LocalDateTime.of(2026, 9, 13, 0, 0))
                 .targetAssetKey(TARGET_ASSET)
                 .baselineSnapshotId("100")
+                .writerJobKey("writer.prod.orders")
+                .writerEpoch(7L)
                 .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
                 .build();
     }
@@ -159,6 +208,8 @@ class SnapshotEvidenceServiceTest {
         return Map.of(
                 SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE,
                 SnapshotEvidenceContract.INTENT_KEY_PROPERTY, INTENT_KEY,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY, "writer.prod.orders",
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY, "7",
                 SnapshotEvidenceContract.TARGET_ASSET_PROPERTY, TARGET_ASSET,
                 SnapshotEvidenceContract.BIZ_DATE_PROPERTY, "2026-09-13",
                 SnapshotEvidenceContract.FINAL_PROPERTY, SnapshotEvidenceContract.FINAL_VALUE);

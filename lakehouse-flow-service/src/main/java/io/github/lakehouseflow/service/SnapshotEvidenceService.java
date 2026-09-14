@@ -4,6 +4,7 @@ import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.common.SnapshotIds;
 import io.github.lakehouseflow.dao.LakehouseEventRepository;
 import io.github.lakehouseflow.model.EvaluationResult;
+import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.SchedulingIntent;
 import lombok.RequiredArgsConstructor;
@@ -85,6 +86,56 @@ public class SnapshotEvidenceService {
     }
 
     /**
+     * Find a business-data snapshot attributable to one platform writer generation.
+     *
+     * @param intent immutable job-control intent and table baseline
+     * @return satisfied only when the controlled writer epoch produced target data
+     */
+    @Transactional(readOnly = true)
+    public EvaluationResult evaluateJobControlProgress(JobControlIntent intent) {
+        AssetAddress target = requireJobControlTarget(intent);
+        List<LakehouseEvent> newerEvents = lakehouseEventRepository
+                .findSnapshotEvidenceCandidates(
+                        target.catalogName(),
+                        target.databaseName(),
+                        target.tableName(),
+                        intent.getCreatedAt())
+                .stream()
+                .filter(event -> isAfterBaseline(event.getSnapshotId(), intent.getBaselineSnapshotId()))
+                .toList();
+        Optional<LakehouseEvent> matchingEvent = newerEvents.stream()
+                .filter(this::isAcceptedDataCommit)
+                .filter(event -> hasRequiredWriterProperties(event, intent))
+                .reduce(this::laterSnapshot);
+        if (matchingEvent.isPresent()) {
+            LakehouseEvent event = matchingEvent.get();
+            return EvaluationResult.builder()
+                    .satisfied(true)
+                    .assetKey(intent.getTableAssetKey())
+                    .snapshotId(event.getSnapshotId())
+                    .eventId(event.getEventId())
+                    .description("Target snapshot " + event.getSnapshotId()
+                            + " matched writer generation " + intent.getWriterJobKey()
+                            + "@" + intent.getWriterEpoch())
+                    .evaluatedAt(System.currentTimeMillis())
+                    .build();
+        }
+        String latestObservedSnapshotId = newerEvents.stream()
+                .reduce(this::laterSnapshot)
+                .map(LakehouseEvent::getSnapshotId)
+                .orElse(intent.getBaselineSnapshotId());
+        return EvaluationResult.builder()
+                .satisfied(false)
+                .assetKey(intent.getTableAssetKey())
+                .snapshotId(latestObservedSnapshotId)
+                .waitingReason("Waiting for target data snapshot attributed to writer generation "
+                        + intent.getWriterJobKey() + "@" + intent.getWriterEpoch())
+                .description("Writer generation snapshot attribution evidence is not available yet")
+                .evaluatedAt(System.currentTimeMillis())
+                .build();
+    }
+
+    /**
      * Validate the immutable intent and parse its target asset address.
      *
      * @param intent scheduling intent to evaluate
@@ -106,6 +157,10 @@ public class SnapshotEvidenceService {
         if (isBlank(intent.getTargetAssetKey())) {
             throw new IllegalArgumentException("scheduling intent target asset is required");
         }
+        if (isBlank(intent.getWriterJobKey()) || intent.getWriterEpoch() == null
+                || intent.getWriterEpoch() <= 0) {
+            throw new IllegalArgumentException("scheduling intent writer job key and positive epoch are required");
+        }
 
         String[] parts = intent.getTargetAssetKey().trim().split("\\.", 4);
         if (parts.length < 3 || isBlank(parts[0]) || isBlank(parts[1]) || isBlank(parts[2])) {
@@ -113,6 +168,30 @@ public class SnapshotEvidenceService {
                     "target asset key must use catalog.database.table[.partition]");
         }
         return new AssetAddress(parts[0], parts[1], parts[2], parts.length == 4 ? parts[3] : null);
+    }
+
+    /** Validate and parse the physical target of one job-control intent. */
+    private AssetAddress requireJobControlTarget(JobControlIntent intent) {
+        if (intent == null) {
+            throw new IllegalArgumentException("job control intent is required");
+        }
+        if (isBlank(intent.getIntentKey()) || isBlank(intent.getWriterJobKey())) {
+            throw new IllegalArgumentException("job control intent and writer keys are required");
+        }
+        if (intent.getWriterEpoch() == null || intent.getWriterEpoch() <= 0) {
+            throw new IllegalArgumentException("job control writer epoch must be positive");
+        }
+        if (intent.getCreatedAt() == null) {
+            throw new IllegalArgumentException("job control intent creation time is required");
+        }
+        if (isBlank(intent.getTableAssetKey())) {
+            throw new IllegalArgumentException("job control table asset is required");
+        }
+        String[] parts = intent.getTableAssetKey().trim().split("\\.", 4);
+        if (parts.length != 3 || isBlank(parts[0]) || isBlank(parts[1]) || isBlank(parts[2])) {
+            throw new IllegalArgumentException("job control table asset must use catalog.database.table");
+        }
+        return new AssetAddress(parts[0], parts[1], parts[2], null);
     }
 
     /**
@@ -155,6 +234,12 @@ public class SnapshotEvidenceService {
                         SnapshotEvidenceContract.INTENT_KEY_PROPERTY,
                         intent.getIntentKey())
                 && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                        intent.getWriterJobKey())
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                        Long.toString(intent.getWriterEpoch()))
+                && propertyEquals(properties,
                         SnapshotEvidenceContract.TARGET_ASSET_PROPERTY,
                         intent.getTargetAssetKey())
                 && propertyEquals(properties,
@@ -163,6 +248,23 @@ public class SnapshotEvidenceService {
                 && propertyEquals(properties,
                         SnapshotEvidenceContract.FINAL_PROPERTY,
                         SnapshotEvidenceContract.FINAL_VALUE);
+    }
+
+    /** Match every required platform writer-generation property. */
+    private boolean hasRequiredWriterProperties(LakehouseEvent event, JobControlIntent intent) {
+        Map<?, ?> properties = snapshotProperties(event);
+        return propertyEquals(properties,
+                SnapshotEvidenceContract.SOURCE_PROPERTY,
+                SnapshotEvidenceContract.INTENT_SOURCE)
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY,
+                        intent.getIntentKey())
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                        intent.getWriterJobKey())
+                && propertyEquals(properties,
+                        SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                        Long.toString(intent.getWriterEpoch()));
     }
 
     /**

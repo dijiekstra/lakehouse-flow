@@ -29,6 +29,11 @@ lakehouse-flow:
   scheduling-intent-delivery:
     publisher:
       enabled: false
+  job-control-intent-delivery:
+    publisher:
+      enabled: false
+  job-control-snapshot-confirmation:
+    enabled: false
   snapshot-confirmation:
     enabled: false
 

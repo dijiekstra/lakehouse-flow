@@ -24,6 +24,15 @@ public final class SnapshotEvidenceContract {
     /** Snapshot property carrying the immutable scheduling intent key. */
     public static final String INTENT_KEY_PROPERTY = "lakehouse-flow.intent-key";
 
+    /** Snapshot property carrying the immutable job-control intent key. */
+    public static final String JOB_CONTROL_INTENT_KEY_PROPERTY = "lakehouse-flow.job-control-intent-key";
+
+    /** Snapshot property identifying the unique writer job for the physical table. */
+    public static final String WRITER_JOB_KEY_PROPERTY = "lakehouse-flow.writer-job-key";
+
+    /** Snapshot property carrying the fenced writer generation. */
+    public static final String WRITER_EPOCH_PROPERTY = "lakehouse-flow.writer-epoch";
+
     /** Snapshot property carrying the managed target asset key. */
     public static final String TARGET_ASSET_PROPERTY = "lakehouse-flow.target-asset";
 

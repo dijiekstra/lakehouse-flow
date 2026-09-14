@@ -32,7 +32,7 @@ Lakehouse Flow 当前应该回答：
 | LakehouseEvent | 已实现 | 原始湖仓事件，按 `event_id` 去重 |
 | AssetState | 已实现 | 物理观察与业务数据 snapshot 双轨单调推进；维护提交只更新表级观察轨，数据提交才投影 `changedPartitions` 分区状态 |
 | Lakehouse snapshot source SPI | 已实现基础版 | source/provider/identity/offset ordering 均与湖格式解耦；同一摄取循环可挂载 Paimon、Iceberg、Hudi 等适配器 |
-| Paimon snapshot source | 实现待 E2E | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导 `changedPartitions`；真实 catalog 环境尚待整体 E2E 验证 |
+| Paimon snapshot source | 1.0 闭环已验证 | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导规范化的 `changedPartitions`；订单到 GMV 普通、checkpoint 重启与 Node 子图补数已通过真实 catalog E2E |
 | EventIngestionService | 基础版 | 动态扫描全部已配置 source；事件、表/分区状态、来源路由、FlowPlan 决策和格式独立 offset 在同一事务提交 |
 | 条件与触发评估 | 基础版 | `FlowPlanConditionService` 支持 AND/OR 分组；`FlowPlanEvaluationService` 从已发布版本生成完整 DAG 调度意图 |
 | SnapshotProgressService | 基础版 | 捕获目标资产 publication baseline；资产级 latest 推进不再直接确认共享写入结果 |
@@ -42,9 +42,10 @@ Lakehouse Flow 当前应该回答：
 | TriggerHistory | 基础版 | 支持结构化 JSONB 审计 payload |
 | FlowPlan/Node | 基础版 | 支持版本化 DAG、发布前图校验、输入依赖和日期模板化目标资产 |
 | SchedulingAction | 基础版 | 支持 workflow 重跑、task instance 重跑、published FlowPlan node 重跑、统一批次化的完整 Flow/Node 子图补数、全范围或单失败节点级联恢复、安全整日跳过、补数批次暂停/恢复交付/取消、取消、跳过和 snapshot 重检 |
-| REST API | 基础版 | 暴露 FlowPlan/Node、action command/query、instance evidence、已发布 scheduling intent 审计和 backfill query/control API；不存在供下游抢任务的 ready/claim/deliver API |
+| REST API | 基础版 | 暴露 FlowPlan/Node、action command/query、instance evidence、已发布 scheduling intent 审计、backfill query/control，以及 writer binding 和 start/restart job-control API；不存在供下游抢任务的 ready/claim/deliver API |
 | SchedulingIntent Delivery | 基础版 | Lakehouse Flow 内部扫描 READY 决策，冻结 baseline，并按单一选定路由写入版本化完整指令；数据库立即可见，HTTP 由 Java 17 client 主动调用，MQ 通过 broker-neutral gateway 发布，外部投递支持租约、fencing、退避和死信审计 |
-| Target-Date Admission | 基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化发布槽位；冲突任务保持 READY，snapshot 确认或发布准入租约过期后释放；它尚不提供单表 writer 唯一绑定 |
+| Target-Date Admission | 基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化发布槽位；冲突任务保持 READY，snapshot 确认或发布准入租约过期后释放；物理表级唯一 writer 和 epoch fencing 由独立 `WriterJobBinding` 负责 |
+| Writer Job Control | 已完成 | `WriterJobBinding` 固化单表单 writer；平台 start/restart 创建独立 `JobControlIntent` 并单调分配 epoch，投递与 snapshot 结果保持正交；真实 Flink START/RESTART、checkpoint offset 恢复和旧 epoch Paimon 提交拒绝已验证 |
 | 补偿/运维视图 | 基础版 | 已有 snapshot 确认扫描、补数批次查询，以及按 Flow/版本/节点筛选和按 action key 展开的 snapshot 证据联查；UI 仍未实现 |
 | 执行器 | 不属于职责 | 本项目只做调度，不提交、运行或跟踪外部任务 |
 
@@ -64,7 +65,7 @@ LakehouseSnapshotScanner
   -> WorkflowInstance + TaskInstance + TriggerHistory
   -> internal SchedulingIntentOutboxScanner
   -> scheduling_target_admission(targetAssetKey + bizDate)
-  -> writer_job_binding(tableAssetKey -> writerJobKey, LF-1.0 target)
+  -> writer_job_binding(tableAssetKey -> writerJobKey + current writerEpoch)
   -> scheduling_intent + scheduling_intent_delivery
   -> SchedulingIntentDeliveryScanner (HTTP/MQ claim + push + retry)
   -> downstream polls table / receives HTTP call / consumes MQ
@@ -73,11 +74,13 @@ LakehouseSnapshotScanner
   -> DagProgressionService
   -> next READY_TO_SCHEDULE intent
 
-platform START_JOB / RESTART_JOB (LF-1.0 G20 target)
+platform START_JOB / RESTART_JOB
   -> writer_job_binding + next writerEpoch
   -> independent job_control_intent + delivery
+  -> JobControlIntentDeliveryScanner (DB/HTTP/MQ transport only)
   -> platform execution plane operates configured engine (Flink in LF-1.0)
   -> target data snapshot carries writer-generation properties
+  -> JobControlSnapshotConfirmationScanner (snapshot result only)
 ```
 
 关键约束：
@@ -88,7 +91,7 @@ platform START_JOB / RESTART_JOB (LF-1.0 G20 target)
 - 调度结果只由受管目标资产中可归属于本次 intent 的 snapshot 推进确认，不读取、不接收也不依赖下游任务结果回调。
 - `SchedulingIntent` 是 Lakehouse Flow 主动发布的不可变指令；baseline 在首次发布前冻结，完整 `instructionPayload` 对数据库、HTTP 和 MQ 保持一致。
 - 正常、补数、恢复和重跑首次发布前共享目标日期准入槽；互斥只控制 Lakehouse Flow 的意图发布，不声称锁住或停止下游执行。
-- 一个 FlowPlan DAG 可以混合流式和批式节点，但同一规范化物理表只能绑定一个 `writerJobKey`。平台启动/重启该作业时创建独立 `JobControlIntent` 并推进 `writerEpoch`，执行侧负责 fencing 旧 epoch；它不伪造 task/workflow/bizDate，当前代码尚未实现这条 G20 约束。
+- 一个 FlowPlan DAG 可以混合流式和批式节点，但同一规范化物理表只能绑定一个 `writerJobKey`。V22 已通过数据库唯一键、Flow 发布校验和 intent 发布期 writer admission 落实该约束。平台启动/重启作业时创建独立 `JobControlIntent` 并推进 `writerEpoch`，不伪造 task/workflow/bizDate；下游 adapter 在 Paimon commit 期间持有 writer binding 行锁并拒绝旧 epoch。
 - Flow/Node 只知道 `processingMode=STREAMING|BATCH`，不保存 Flink、Spark 或其他执行引擎类型。流式父节点通过持续产出的资产 snapshot/watermark 为下游提供依赖证据，批式父节点通过同一调度实例的已确认输出提供证据；汇聚下游必须等待全部父边和自身依赖。
 - 发布版本策略会决定节点确认窗口、目标日期租约和版本活跃 workflow 上限；达到并发上限的任务保持 READY，不产生 intent，也不提前冻结 baseline。
 - 下游必须把 `requiredSnapshotProperties` 原样写入本次逻辑输入边界完成时的数据 snapshot；湖格式适配器把原生 operation 映射为 typed `dataChange`。维护 snapshot 只推进 source offset 和表级 `latestSnapshotId`，不推进 `latestDataSnapshotId`、分区状态、自然触发或 task 确认。
@@ -131,10 +134,14 @@ password postgres
 ### 构建与测试
 
 ```bash
-./mvnw clean verify
+./mvnw clean verify -DskipITs
 ```
 
-默认分支 `master` 的 GitHub Actions 使用 JDK 17 和 Maven Wrapper 执行同一条命令。Service 模块在 `verify` 阶段强制要求 line coverage >= 90%、branch coverage >= 65%；校验成功后才触发 Boot JAR 构建产物 workflow。当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于 `LF-1.0` Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
+当前开发阶段的默认分支 CI 使用 JDK 17、Maven Wrapper 和 `-DskipITs`，继续执行全部单元测试并强制检查 Service line coverage >= 90%、branch coverage >= 65%；每个 public service 方法仍必须有直接测试入口。Testcontainers 整体 E2E 暂不随每次开发提交运行，等剩余功能与观测能力收口后再用不带 `-DskipITs` 的 `./mvnw clean verify` 集中验收。E2E 仍覆盖 API/事件入口、PostgreSQL/Flyway、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 与补数推进，不归属于某个单独生产模块。
+
+当前系统 E2E 在 `lakehouse-flow-e2e` 中启动 PostgreSQL、MySQL 和一组 Flink JobManager/TaskManager 容器。订单链路测试只通过 Lakehouse Flow REST API 配置 ODS/DWD/DWS/ADS Flow 和单表 writer：ODS 是 Flink CDC 常驻流作业，并在 checkpoint 完成后提交带 writer 归因的 Paimon snapshot；DWD、DWS、ADS 是收到 HTTP scheduling intent 后立即提交的 Flink 有界批作业。它还会发起真实 `RESTART_JOB`，从外部 checkpoint 恢复 CDC offset，验证旧 epoch 拒绝、第二轮普通 DAG，以及从 DWD 开始且下游严格等待父 snapshot 的 Node 子图补数。测试执行端只模拟平台执行面，不向 Lakehouse Flow 回传 Flink 状态。
+
+高可用测试启动两个独立 scheduler 应用上下文并连接同一真实 PostgreSQL，在明确的持久化切点模拟进程中断，覆盖 source 事务回滚与 offset 重放、HTTP 调用前 claim 遗留、送达后 ACK 丢失、租约过期重占、旧 token fencing、snapshot 确认重扫、Flow 并发名额和目标日期槽竞争。所有结果仍由数据库证据和目标 snapshot 判定，不读取执行状态。
 
 Lakehouse Flow 内部扫描 READY 决策并写入 `scheduling_intent`。每条 intent 选择一个路由：`DATABASE_TABLE` 供下游轮询专用表，`HTTP` 由内部 publisher 主动 POST，`MQ` 由内部 publisher 调用部署提供的 `SchedulingIntentMessageGateway`。下游始终被动接收，不调用 Lakehouse Flow 抢占任务。REST 接口仅供审计：
 
@@ -142,6 +149,28 @@ Lakehouse Flow 内部扫描 READY 决策并写入 `scheduling_intent`。每条 i
 
 ```bash
 curl 'http://localhost:8080/api/v1/scheduling-intents/tasks/42'
+```
+
+平台先为每张受管物理表注册唯一 writer，再通过独立控制意图启动或重启常驻流 writer。`requestKey` 是平台调用幂等键；响应中的 delivery 只表示传输，snapshot result 才表示新 writer epoch 是否产生了可归因数据：
+
+```bash
+curl -X POST 'http://localhost:8080/api/v1/writer-jobs' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "writerJobKey": "writer.ods.orders",
+    "tableAssetKey": "paimon.prod.ods_orders",
+    "allowedProcessingModes": ["STREAMING"]
+  }'
+
+curl -X POST 'http://localhost:8080/api/v1/writer-jobs/writer.ods.orders/start' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "requestKey": "start-writer-ods-orders-20260914",
+    "requestedBy": "platform-operator",
+    "reason": "initial deployment"
+  }'
+
+curl 'http://localhost:8080/api/v1/job-control-intents/job-control:writer.ods.orders:1'
 ```
 
 启用 Paimon source 时配置原生 catalog options 和受管表；每张表拥有独立 offset。默认关闭，避免未配置 catalog 时启动扫描：
@@ -178,6 +207,16 @@ lakehouse-flow:
       max-attempts: 8
       initial-backoff: PT1S
       maximum-backoff: PT5M
+  job-control-intent-delivery:
+    channel: HTTP
+    destination: https://platform.example/api/job-control-intents
+    deliver-window: PT10M
+    confirmation-timeout: PT10M
+    publisher:
+      claim-lease: PT30S
+      max-attempts: 8
+      initial-backoff: PT1S
+      maximum-backoff: PT5M
 ```
 
 HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接受。publisher 采用至少一次投递，`intentKey` 是下游消费幂等键。超过 `publicationAdmission.leaseExpiresAt` 的意图不再向外发布并进入传输死信，但 task 的结果判断仍只取决于是否出现可归属的目标 snapshot。
@@ -205,7 +244,7 @@ source reconciliation 周期性核对湖表 earliest/latest、durable offset、�
 
 `startup-mode` 默认 `LATEST`，首次接入只摄入最新 snapshot 并建立一次当前事实；`EARLIEST` 会显式回放仍被保留的历史 snapshot，可能触发历史业务日期，只用于明确的数据恢复场景。常规历史补数应使用 `BackfillBatch`，不要依赖 source 回放。
 
-Paimon source 读取 snapshot properties，但普通 Paimon SQL/commit 链路不能假定会自动写入 Lakehouse Flow 的单次意图属性。`LF-1.0` 使用下游侧 Flink/Paimon 流批一体 writer-side adapter：批式在有界输入结束提交时注入 `requiredSnapshotProperties`，流式在 checkpoint 已覆盖 intent 冻结的 input snapshot/watermark vector 时注入。`lakehouse-flow.final=true` 表示逻辑 intent 完成，不表示流作业结束。上线前分别用流式和批式探针验证属性、分区和 `dataChange` 可回读。只配置 source 而没有写入扩展时，外部 snapshot 仍可驱动资产状态，Lakehouse Flow 下发的 intent 则不会被误判为成功。
+Paimon source 读取 snapshot properties，但普通 Paimon SQL/commit 链路不能假定会自动写入 Lakehouse Flow 的单次意图属性。独立的 `lakehouse-flow-flink-paimon` 下游模块提供统一 writer-side adapter：批式在有界输入结束提交时注入 `requiredSnapshotProperties`，流式在 checkpoint 已覆盖 intent 冻结的 input snapshot/watermark vector 时注入，并在整个 Paimon commit 期间执行 writer epoch fencing。`lakehouse-flow.final=true` 表示逻辑 intent 完成，不表示流作业结束。只配置 source 而没有写入扩展时，外部 snapshot 仍可驱动资产状态，Lakehouse Flow 下发的 intent 则不会被误判为成功。
 
 Action 审计查询示例：
 
@@ -258,21 +297,22 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 | 模块 | 职责 |
 | --- | --- |
 | `lakehouse-flow-common` | 共享工具，例如 snapshot ID 比较 |
+| `lakehouse-flow-flink-paimon` | 下游可复用的 Paimon writer adapter、归因属性校验和 writer epoch fencing SPI/JDBC 实现 |
 | `lakehouse-flow-model` | JPA 实体和值对象 |
 | `lakehouse-flow-dao` | Spring Data Repository 与 Flyway schema migrations |
-| `lakehouse-flow-service` | 资产状态、事件、条件评估、snapshot 进展确认、实例、action 联查和触发审计服务 |
+| `lakehouse-flow-service` | 资产状态、事件、条件评估、snapshot 进展确认、实例、writer binding/job-control、action 联查和触发审计服务 |
 | `lakehouse-flow-integration` | 格式无关 snapshot source SPI、通用摄取、source 对账补偿、指标与 Paimon Catalog 适配器 |
-| `lakehouse-flow-api` | FlowPlan/Node、action command/query、instance evidence、intent 和 delivery 死信只读审计 API |
-| `lakehouse-flow-scheduler` | 内部 intent 创建、HTTP/MQ 可靠投递、delivery 指标和 snapshot 确认扫描循环 |
-| `lakehouse-flow-test` | `LF-1.0` 系统级 E2E 的测试装配入口；覆盖完整应用链路，不限定为本模块局部测试 |
+| `lakehouse-flow-api` | FlowPlan/Node、action command/query、instance evidence、writer binding/job-control、intent 和 delivery 审计 API |
+| `lakehouse-flow-scheduler` | 数据与 job-control intent 创建/可靠投递、delivery 指标和 snapshot 确认扫描循环 |
+| `lakehouse-flow-test` | 跨模块共享测试夹具，不承载系统级 E2E |
+| `lakehouse-flow-e2e-jobs` | 隔离 Flink/Paimon/CDC 依赖的测试执行作业；打包为提交给真实 Flink 容器的 shaded JAR |
+| `lakehouse-flow-e2e` | 整体 Testcontainers E2E 装配；通过公开 API、真实 PostgreSQL/MySQL/Flink/Paimon 和被动 HTTP 执行端验收系统链路 |
 | `lakehouse-flow-boot` | Spring Boot 启动模块和应用配置 |
 
 ## 下一步建议
 
-1. G16 source-aware snapshot 超时判定与 G19 流批混合 input snapshot/watermark vector 已完成代码和单测。
-2. 下一步增加 `tableAssetKey -> writerJobKey` 唯一绑定、writer epoch，以及不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)` 与可靠投递。
-3. 实现 Flink/Paimon 参考 writer-side adapter，让流式 checkpoint 与批式结束提交都能写入可归因的 intent 和 writer epoch 属性。
-4. 打通业务库、Flink CDC 流式 ODS、平台作业启动/重启、DWD/DWS/ADS 混合流批 DAG、DB/HTTP、真实 Paimon、重跑和补数的整体 E2E。
-5. 完成 PostgreSQL 多 scheduler 锁竞争、中断、claim 重占、fencing、事务回滚和 offset 恢复验收。
-6. 补齐阻塞原因和 source 对账的最小运维 API，随后冻结 1.0 REST、intent 和 migration 契约。
-7. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
+1. LF-1.0 真实 Paimon 闭环与 PostgreSQL 高可用恢复已经完成：普通 DAG、重启、Node 子图补数、双 scheduler 竞争和中断恢复均已验收。
+2. 在同一整体 E2E 中补齐重跑、完整 Flow 补数和失败恢复，完成 R2 的剩余 action 集合。
+3. 补 `DATABASE_TABLE` 正式投递，以及两类 intent 的 HTTP 超时、重试耗尽和死信路径；HTTP 至少一次重投与下游 `intentKey` 幂等已经通过。
+4. 收口最小运维查询和兼容性回归后冻结 1.0 契约。
+5. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。

@@ -42,6 +42,18 @@
             <groupId>org.apache.paimon</groupId>
             <artifactId>paimon-bundle</artifactId>
         </dependency>
+        <!-- Paimon CatalogContext exposes Hadoop configuration classes to adapter callers. -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>${hadoop.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>runtime</scope>
+        </dependency>
 
         <!-- Spring -->
         <dependency>

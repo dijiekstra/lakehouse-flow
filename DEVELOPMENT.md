@@ -37,10 +37,16 @@ docker compose up -d postgres
 ## 构建与测试
 
 ```bash
-./mvnw clean verify
+./mvnw clean verify -DskipITs
 ```
 
-`verify` 会执行全模块测试，并强制检查 service 模块 line coverage >= 90%、branch coverage >= 65%。局部开发可以先运行 `./mvnw -pl <module> -am test`，完成一项变更前仍需回到全量 `verify`。
+当前开发阶段使用 `-DskipITs` 跳过 `lakehouse-flow-e2e` 的 Testcontainers 测试，但仍执行全模块单元测试，并强制检查 service 模块 line coverage >= 90%、branch coverage >= 65%。局部开发可以先运行 `./mvnw -pl <module> -am test`，完成一项变更前回到上述开发期全量验证。
+
+整体 E2E 暂时集中到 LF-1.0 稳定态末尾执行，开发过程中不要逐项启动。进入集中验收后使用：
+
+```bash
+./mvnw clean verify
+```
 
 如果只想做编译检查：
 
@@ -77,14 +83,17 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 
 ```text
 lakehouse-flow-common       shared helpers
+lakehouse-flow-flink-paimon downstream Paimon writer adapter and epoch fencing
 lakehouse-flow-model        JPA entities and value objects
 lakehouse-flow-dao          repositories and Flyway schema migrations
 lakehouse-flow-service      domain services
 lakehouse-flow-integration  lakehouse snapshot source SPI and adapters
 lakehouse-flow-api          FlowPlan/Node、action、instance、intent、backfill query REST API
 lakehouse-flow-scheduler    intent outbox、外部投递、snapshot 确认和积压指标扫描
-lakehouse-flow-test         整体 Testcontainers E2E 的共享装配入口
+lakehouse-flow-test         cross-module shared test fixtures
 lakehouse-flow-boot         Spring Boot application
+lakehouse-flow-e2e-jobs     test-only Flink CDC and bounded batch jobs
+lakehouse-flow-e2e          whole-system Testcontainers E2E assembly
 ```
 
 ## 开发约束
@@ -104,4 +113,4 @@ lakehouse-flow-boot         Spring Boot application
 
 不要在本开发指南中复制阶段待办。下一推进项、优先级和退出标准只读取 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md)，以免已经完成的工作继续出现在旧清单中。
 
-当前不可退让的开发顺序是：先检查进度基准和权威架构，再阅读相关实现与测试，完成修改后使用 Maven Wrapper 验证。当前优先级是 `LF1-01` source-aware confirmation，之后依次补齐 G20 `WriterJobBinding`、独立 `JobControlIntent` / delivery 与单表单写入者约束，再完成 G19 引擎无关的 `STREAMING|BATCH` 节点和混合父边 snapshot 证据契约，并实现 Flink CDC ODS、Flink/Paimon 参考 writer 和整体 E2E。不得放宽现有 `SchedulingIntent` 的 task 非空约束来承载作业生命周期，也不得把 Flink/Spark 类型带入 Flow 或通用 intent。整体 Testcontainers E2E 是 `LF-1.0` 发布门槛，不用零散模块测试冒充。
+当前不可退让的开发顺序是：先检查进度基准中的四态清单和权威架构，再阅读相关实现与测试，完成修改后使用 Maven Wrapper 执行开发期验证。优先完成最小运维只读聚合、source/阻塞/死信观测，再补运维手册和契约冻结；剩余 action、正式投递和流批边界的 Testcontainers E2E 统一留到稳定态集中执行。不得放宽 `SchedulingIntent` 的 task 非空约束来承载作业生命周期，也不得把 Flink/Spark 类型带入 Flow 或通用 intent。

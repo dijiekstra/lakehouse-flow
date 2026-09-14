@@ -1,10 +1,10 @@
 # Outbound Intent 下游契约
 
-**当前 SchedulingIntent 契约版本**: 1.3；G19 已实现，尚待真实 Flink/Paimon 与 DB/HTTP E2E 后冻结
+**当前 SchedulingIntent 契约版本**: 1.3；真实 Flink/Paimon 普通与 Node 补数链路、HTTP 中断重投和双 scheduler 恢复已验证，尚待 DATABASE_TABLE、剩余 action 与兼容性验收后冻结
 **LF-1.0 目标 SchedulingIntent 契约版本**: 1.3
-**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；尚待 G20 实现和 E2E 验证
+**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；G20 START/RESTART、checkpoint 恢复、旧 epoch fencing 与 PostgreSQL 高可用矩阵已通过，尚待正式投递和兼容性验收后冻结
 **适用通道**: Database Outbox、HTTP、MQ
-**LF-1.0 状态**: 数据处理契约 1.3 已实现；待 G20、真实 Flink/Paimon 与 DB/HTTP E2E 完成后冻结
+**LF-1.0 状态**: 数据处理契约 1.3 与作业控制契约 1.0 已实现；真实 Paimon 闭环和 PostgreSQL 高可用恢复已通过，待 DATABASE_TABLE、剩余 action、最小运维查询与兼容性验收后冻结
 
 ## 1. 契约目标
 
@@ -186,7 +186,7 @@ Lakehouse Flow 只负责产生和投递出站意图，不执行任务，也不�
 
 ## 4. 发布互斥与租约边界
 
-FlowPlanVersion 发布前先按规范化 `tableAssetKey` 校验唯一 `writerJobKey`，防止不同 Flow、节点或模式成为同表 writer。发布 `SchedulingIntent` 时，Lakehouse Flow 先按发布版本的 `maxActiveInstances` 完成 workflow 准入，再校验 writer binding/epoch，最后按 `targetAssetKey + bizDate` 获取持久化目标槽。正常调度、补数、恢复和重跑共享这些调度侧互斥；任一准入未通过时都不会冻结 baseline，也不会产生 outbox 记录，而是保持 READY 等待内部扫描重试。
+FlowPlanVersion 发布前先按规范化 `tableAssetKey` 校验唯一 `writerJobKey`，防止不同 Flow、节点或模式成为同表 writer。发布 `SchedulingIntent` 时，Lakehouse Flow 先完成发布版本的 `maxActiveInstances` 准入，再取得 `targetAssetKey + bizDate` 槽并校验 writer binding/epoch；writer 不可用时立即释放本次目标槽。正常调度、补数、恢复和重跑共享这些调度侧互斥；任一准入未通过时都不会冻结 baseline，也不会产生 outbox 记录，而是保持 READY 等待内部扫描重试。
 
 发布 `JobControlIntent` 时不进入 workflow 并发或目标日期准入，而是锁定对应 `WriterJobBinding` 并原子分配下一 epoch。同一 writer 的两个启动/重启请求只能串行形成控制意图；不同 writer 可以并行。数据库唯一键必须保证一个 `tableAssetKey` 只存在一个有效 binding，不能仅依赖发布前内存校验。
 
@@ -196,7 +196,7 @@ FlowPlanVersion 发布前先按规范化 `tableAssetKey` 校验唯一 `writerJob
 
 ### 4.1 传输状态与至少一次投递
 
-每条不可变 outbound intent 只选择一个 route，避免同一部署同时从数据库、HTTP 和 MQ 重复下发。当前 `SchedulingIntent` 继续使用已有 delivery 表；G20 新增的 `JobControlIntent` 使用独立领域记录和 delivery 关联，但复用同一 claim、fencing、退避、死信算法及 publisher SPI，不采用可空多态外键。数据处理路由由 `lakehouse-flow.scheduling-intent-delivery.channel` 和 `destination` 配置，作业控制路由使用对应的 job-control 配置：
+每条不可变 outbound intent 只选择一个 route，避免同一部署同时从数据库、HTTP 和 MQ 重复下发。`SchedulingIntent` 与 `JobControlIntent` 使用各自独立的领域记录和 delivery 外键，但复用同一 claim、fencing、退避、死信算法及 publisher SPI，不采用可空多态外键。数据处理路由由 `lakehouse-flow.scheduling-intent-delivery.channel` 和 `destination` 配置，作业控制路由使用对应的 job-control 配置：
 
 - `DATABASE_TABLE`：intent 与 delivery 在同一事务提交，delivery 立即为 `PUBLISHED`；执行面分别轮询 `scheduling_intent` 或 `job_control_intent`。
 - `HTTP`：delivery 初始为 `PENDING`，内部 scanner 使用 Java 17 HTTP client 主动 POST；只有 2xx 算传输 ACK，响应 body 不作为任务状态读取。
@@ -329,6 +329,10 @@ Paimon 1.3 的标准 commit 与普通 SQL 写入链路不能假设会自动为�
 5. adapter 是可供下游引入的独立边界，Flink/Paimon 依赖不得泄漏到 Lakehouse Flow 的 service、scheduler 或通用 source SPI。
 6. 部署验收分别完成流式 checkpoint 和批式 job-end 的带属性探针提交，再验证 source 完整读回数据处理意图的七个约定属性、`dataChange=true` 和目标 `changedPartitions`；常驻作业还要验证四个 writer 世代属性。
 
+当前可复用实现位于 `lakehouse-flow-flink-paimon`。`WriterCommitContext` 在打开写入路径前校验 intent 类型、物理表、writer 身份、epoch 和完整 snapshot properties；`FlinkPaimonWriterAdapter` 统一准备 checkpoint/批式 committable 并注入属性；`WriterEpochFence` 是执行面可替换的 fencing SPI。受信单团队部署提供的 `JdbcWriterEpochFence` 会对 Lakehouse Flow PostgreSQL 中的 `writer_job_binding` 执行 `SELECT ... FOR UPDATE`，精确校验当前 holder，并把该行锁保持到 Paimon commit 成功或失败后，防止旧 writer 在检查和物理提交之间跨过新 epoch 分配。
+
+平台执行面负责 Flink 状态恢复，不由 Lakehouse Flow 读取 job 状态。当前整体 E2E 将 CDC checkpoint 外部化并在取消旧 JobID 后保留最终 checkpoint，`RESTART_JOB` 以新 epoch 从该 checkpoint 恢复 source offset；恢复是否成功仍只由后续可归因 Paimon 业务 snapshot 证明。生产执行面可以使用等价的 checkpoint/savepoint 策略，但不得退化为从 `LATEST` 重新启动并跳过重启窗口内的数据。
+
 流式场景的完成对象是 intent 冻结的输入 snapshot/watermark vector，不是无界作业本身。一条 intent 在 LF-1.0 中只能由一个目标业务 snapshot 确认；writer adapter 必须保证同一 intent 不跨多个 checkpoint 重复写完成标记。无法安装该写入扩展的 Paimon 任务不能使用 `INTENT_CORRELATED` 成功确认；`commitUser` / `commitIdentifier` 不得降级替代强归因。
 
 ### 7.3 Source reconciliation
@@ -336,6 +340,8 @@ Paimon 1.3 的标准 commit 与普通 SQL 写入链路不能假设会自动为�
 适配器必须实现当前位置检查，并明确返回 `EMPTY`、`UNINITIALIZED`、`IN_SYNC`、`LAGGING`、`RETENTION_GAP`、`OFFSET_AHEAD` 或 `ERROR`。是否存在 retention gap 只能由格式适配器依据其原生 offset 语义判断，公共调度代码不得猜测。
 
 Lakehouse Flow 同时对账物理轨 `source range -> durable offset -> latest event -> AssetState.latestSnapshotId` 和业务轨 `latest data event -> AssetState.latestDataSnapshotId`。只允许两类自动补偿：从 durable offset 严格后继继续读取仍保留的 snapshot，以及重放已经持久化的物理或数据事件投影。不得修改 snapshot、伪造事件、把 offset 跳到 latest，或因对账异常确认任何调度意图。
+
+同一 source 的摄入事务必须在写入事件之前初始化并锁定 `(sourceType, sourceName)` offset 行，并把该 PostgreSQL 行锁保持到事件、AssetState、DAG/Flow 评估和 offset 一起提交。并发 scheduler 因此只能串行投影同一 source；事务在任意中间切点回滚时，首次 offset 初始化也随事务回滚，下一节点可从同一 snapshot 重放。offset 比较必须使用格式适配器的顺序语义，迟到的较小 offset 不得覆盖较大 durable offset。
 
 `RETENTION_GAP`、`OFFSET_AHEAD`、offset 缺少事件、source latest 缺少对应事件等状态必须失败关闭。运维可通过 Prometheus source 指标查看 lag、gap 和 projection inconsistency；这些指标不会替代 snapshot 证据。
 

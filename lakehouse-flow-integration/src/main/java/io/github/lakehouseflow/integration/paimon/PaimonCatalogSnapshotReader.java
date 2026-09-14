@@ -157,10 +157,28 @@ public class PaimonCatalogSnapshotReader {
                 .map(ManifestEntry::partition)
                 .filter(Objects::nonNull)
                 .map(pathFactory::getPartitionString)
+                .map(PaimonCatalogSnapshotReader::normalizePartitionPath)
                 .filter(partition -> !partition.isBlank())
                 .distinct()
                 .sorted()
                 .toList();
+    }
+
+    /**
+     * Remove Paimon's trailing directory separator from the scheduler partition identity.
+     *
+     * @param partitionPath partition path emitted by Paimon's path factory
+     * @return canonical partition identity without a trailing slash
+     */
+    private static String normalizePartitionPath(String partitionPath) {
+        if (partitionPath == null) {
+            return "";
+        }
+        int end = partitionPath.length();
+        while (end > 0 && partitionPath.charAt(end - 1) == '/') {
+            end--;
+        }
+        return partitionPath.substring(0, end);
     }
 
     /**

@@ -39,7 +39,8 @@ import java.util.Map;
     indexes = {
         @Index(name = "idx_schedule_node_version", columnList = "flow_plan_version_id,sort_order ASC"),
         @Index(name = "idx_schedule_node_code", columnList = "node_code"),
-        @Index(name = "idx_schedule_node_output_asset", columnList = "output_asset_key")
+        @Index(name = "idx_schedule_node_output_asset", columnList = "output_asset_key"),
+        @Index(name = "idx_schedule_node_writer_job", columnList = "writer_job_key")
     }
 )
 @Data
@@ -102,6 +103,12 @@ public class ScheduleNode {
      */
     @Column(name = "output_asset_key", length = 255)
     private String outputAssetKey;
+
+    /**
+     * Stable platform writer allowed to mutate the output physical table.
+     */
+    @Column(name = "writer_job_key", length = 255)
+    private String writerJobKey;
 
     /**
      * Node-level snapshot confirmation policy.

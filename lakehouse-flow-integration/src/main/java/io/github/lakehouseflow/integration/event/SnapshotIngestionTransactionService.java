@@ -54,6 +54,11 @@ public class SnapshotIngestionTransactionService {
             Comparator<String> offsetComparator,
             LakehouseEvent candidateEvent) {
 
+        EventConsumerOffset lockedOffset = lockSourceOffset(
+                candidateEvent,
+                sourceName,
+                sourceOffset,
+                offsetComparator);
         Optional<LakehouseEvent> existing = lakehouseEventRepository.findByEventId(candidateEvent.getEventId());
         boolean inserted = existing.isEmpty();
         LakehouseEvent event = existing.orElseGet(() -> lakehouseEventRepository.save(candidateEvent));
@@ -80,46 +85,70 @@ public class SnapshotIngestionTransactionService {
                         event.getEventId(), route.originType(), route.reason());
             }
         }
-        advanceOffset(
-                candidateEvent.getSourceType(),
-                sourceName,
-                sourceOffset,
-                offsetComparator);
+        advanceOffset(lockedOffset, sourceOffset, offsetComparator);
         return new SnapshotIngestionResult(inserted, event.getEventId(), sourceOffset);
     }
 
     /**
-     * Advance a source offset without allowing an older snapshot to overwrite it.
+     * Initialize and lock one source before any event projection is performed.
      *
-     * @param sourceType lake format or source type
+     * <p>The row lock is deliberately held across event persistence, AssetState projection,
+     * trigger evaluation, and offset advancement. This makes concurrent scheduler nodes process
+     * one source serially without separating the durable offset from its projections.
+     *
+     * @param candidateEvent event whose source owns the offset
      * @param sourceName stable source name
-     * @param sourceOffset candidate snapshot offset
+     * @param sourceOffset first or next candidate source position
      * @param offsetComparator format-specific offset ordering
+     * @return locked durable source offset
      */
-    private void advanceOffset(
-            String sourceType,
+    private EventConsumerOffset lockSourceOffset(
+            LakehouseEvent candidateEvent,
             String sourceName,
             String sourceOffset,
             Comparator<String> offsetComparator) {
+        if (candidateEvent == null) {
+            throw new IllegalArgumentException("candidateEvent must not be null");
+        }
         if (offsetComparator == null) {
             throw new IllegalArgumentException("offsetComparator must not be null");
         }
-        Optional<EventConsumerOffset> existing =
-                eventConsumerOffsetRepository.findForUpdate(sourceType, sourceName);
-        if (existing.isPresent()) {
-            EventConsumerOffset offset = existing.get();
-            if (offsetComparator.compare(sourceOffset, offset.getOffsetValue()) > 0) {
-                offset.setOffsetValue(sourceOffset);
-                offset.setUpdatedAt(LocalDateTime.now());
-                eventConsumerOffsetRepository.save(offset);
-            }
-            return;
+        String sourceType = requireText(candidateEvent.getSourceType(), "candidateEvent.sourceType");
+        String normalizedSourceName = requireText(sourceName, "sourceName");
+        String normalizedSourceOffset = requireText(sourceOffset, "sourceOffset");
+        eventConsumerOffsetRepository.ensureOffset(
+                sourceType,
+                normalizedSourceName,
+                normalizedSourceOffset);
+        return eventConsumerOffsetRepository.findForUpdate(sourceType, normalizedSourceName)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Source offset initialization failed: " + sourceType + ":" + normalizedSourceName));
+    }
+
+    /**
+     * Advance a locked source offset without allowing an older snapshot to overwrite it.
+     *
+     * @param offset locked durable source position
+     * @param sourceOffset candidate source position
+     * @param offsetComparator format-specific offset ordering
+     */
+    private void advanceOffset(
+            EventConsumerOffset offset,
+            String sourceOffset,
+            Comparator<String> offsetComparator) {
+        if (offsetComparator.compare(sourceOffset, offset.getOffsetValue()) > 0) {
+            offset.setOffsetValue(sourceOffset);
+            offset.setUpdatedAt(LocalDateTime.now());
+            eventConsumerOffsetRepository.save(offset);
         }
-        eventConsumerOffsetRepository.save(EventConsumerOffset.builder()
-                .sourceType(sourceType)
-                .sourceName(sourceName)
-                .offsetValue(sourceOffset)
-                .build());
+    }
+
+    /** Require and normalize one source coordination value. */
+    private String requireText(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " must not be blank");
+        }
+        return value.trim();
     }
 
     /**

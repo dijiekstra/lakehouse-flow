@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: lakehouse-flow-e2e
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    schemas: public
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+
+lakehouse-flow:
+  snapshot-sources:
+    reconciliation:
+      enabled: false
+
+logging:
+  level:
+    root: WARN
+    io.github.lakehouseflow: INFO
+    org.apache.paimon.utils.HadoopUtils: ERROR

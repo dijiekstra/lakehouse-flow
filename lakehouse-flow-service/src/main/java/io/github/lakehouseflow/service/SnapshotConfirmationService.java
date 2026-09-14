@@ -39,6 +39,7 @@ public class SnapshotConfirmationService {
     private final SchedulingTargetAdmissionService schedulingTargetAdmissionService;
     private final FlowPlanPolicyService flowPlanPolicyService;
     private final SnapshotSourceHealthService snapshotSourceHealthService;
+    private final WriterJobBindingService writerJobBindingService;
 
     /**
      * Check one scheduled task and update its scheduling-side state when the
@@ -47,6 +48,9 @@ public class SnapshotConfirmationService {
      */
     public SnapshotConfirmationResult checkTaskSnapshotProgress(Long taskId, Duration confirmationTimeout) {
         TaskInstance task = getTask(taskId);
+        if (SchedulingStates.SNAPSHOT_CONFIRMED.equals(task.getState())) {
+            return SnapshotConfirmationResult.confirmed(task, task.getObservedSnapshotId());
+        }
         if (!SchedulingStates.SCHEDULED.equals(task.getState())) {
             throw new IllegalStateException("Task " + taskId + " is not scheduled: " + task.getState());
         }
@@ -68,6 +72,7 @@ public class SnapshotConfirmationService {
                     observedSnapshotId);
             dagProgressionService.onSnapshotConfirmed(taskId);
             releaseTargetAdmission(intent, RELEASE_REASON_CONFIRMED);
+            releaseWriterAdmission(intent);
             return SnapshotConfirmationResult.confirmed(task, observedSnapshotId);
         }
 
@@ -104,6 +109,7 @@ public class SnapshotConfirmationService {
                     waitingReason);
             dagProgressionService.onSnapshotNotAdvanced(taskId);
             releaseTargetAdmission(intent, RELEASE_REASON_EXPIRED);
+            releaseWriterAdmission(intent);
             return SnapshotConfirmationResult.expired(
                     task,
                     observedSnapshotId,
@@ -138,7 +144,7 @@ public class SnapshotConfirmationService {
      * @return persisted task instance
      */
     private TaskInstance getTask(Long taskId) {
-        return taskInstanceRepository.findById(taskId)
+        return taskInstanceRepository.findByIdForUpdate(taskId)
                 .orElseThrow(() -> new RuntimeException("Task instance not found: " + taskId));
     }
 
@@ -159,6 +165,14 @@ public class SnapshotConfirmationService {
                 intent.getBizDate().toLocalDate(),
                 intent.getTaskInstanceId(),
                 reason);
+    }
+
+    /** Release a bounded batch writer only when this exact intent still owns its epoch. */
+    private void releaseWriterAdmission(SchedulingIntent intent) {
+        writerJobBindingService.releaseDataIntent(
+                intent.getWriterJobKey(),
+                intent.getWriterEpoch(),
+                intent.getIntentKey());
     }
 
     /**

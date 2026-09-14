@@ -115,7 +115,7 @@ class PaimonCatalogSnapshotReaderTest {
         when(entry101.partition()).thenReturn(partition101);
         when(manifestFileReader.read("manifest-100")).thenReturn(List.of(entry100));
         when(manifestFileReader.read("manifest-101")).thenReturn(List.of(entry101));
-        when(pathFactory.getPartitionString(partition100)).thenReturn("dt=2026-09-12");
+        when(pathFactory.getPartitionString(partition100)).thenReturn("dt=2026-09-12/");
         when(pathFactory.getPartitionString(partition101)).thenReturn("dt=2026-09-13");
 
         List<LakehouseSnapshot> snapshots = reader.scanAfter(definition, null);

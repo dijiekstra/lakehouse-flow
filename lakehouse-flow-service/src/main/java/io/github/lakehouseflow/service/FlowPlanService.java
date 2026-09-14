@@ -38,6 +38,7 @@ public class FlowPlanService {
     private final ScheduleNodeRepository scheduleNodeRepository;
     private final FlowPlanGraphService flowPlanGraphService;
     private final FlowPlanPolicyService flowPlanPolicyService;
+    private final WriterJobBindingService writerJobBindingService;
 
     /**
      * Command for creating a FlowPlan draft.
@@ -88,6 +89,7 @@ public class FlowPlanService {
      * @param dependsOnNodes upstream node codes
      * @param inputDependencySpecJson input asset dependency conditions
      * @param outputAssetKey target asset expected to advance after scheduling
+     * @param writerJobKey stable writer job owning the output physical table
      * @param confirmationPolicyJson node-level snapshot confirmation policy
      * @param sortOrder deterministic graph ordering hint
      */
@@ -100,6 +102,7 @@ public class FlowPlanService {
             List<String> dependsOnNodes,
             Map<String, Object> inputDependencySpecJson,
             String outputAssetKey,
+            String writerJobKey,
             Map<String, Object> confirmationPolicyJson,
             Integer sortOrder) {
     }
@@ -195,6 +198,7 @@ public class FlowPlanService {
                 .dependsOnNodes(copyNodeCodes(command.dependsOnNodes()))
                 .inputDependencySpecJson(copyPolicyMap(command.inputDependencySpecJson()))
                 .outputAssetKey(outputAssetKey)
+                .writerJobKey(blankToNull(command.writerJobKey()))
                 .confirmationPolicyJson(copyPolicyMap(command.confirmationPolicyJson()))
                 .sortOrder(command.sortOrder() != null ? command.sortOrder() : 0)
                 .build();
@@ -218,6 +222,7 @@ public class FlowPlanService {
                 .findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(flowPlanVersion.getId());
         flowPlanGraphService.validateAndOrder(nodes);
         flowPlanPolicyService.validateVersionPolicies(flowPlanVersion, nodes);
+        writerJobBindingService.validatePublishedNodes(nodes);
 
         if (!FlowPlanVersionStatuses.isPublished(flowPlanVersion.getStatus())) {
             flowPlanVersion.markPublished(blankToNull(publishedBy));

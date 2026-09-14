@@ -37,7 +37,8 @@ import java.util.Map;
     },
     indexes = {
         @Index(name = "idx_scheduling_intent_workflow", columnList = "workflow_instance_id,created_at ASC"),
-        @Index(name = "idx_scheduling_intent_asset", columnList = "target_asset_key,created_at ASC")
+        @Index(name = "idx_scheduling_intent_asset", columnList = "target_asset_key,created_at ASC"),
+        @Index(name = "idx_scheduling_intent_writer_epoch", columnList = "writer_job_key,writer_epoch,created_at ASC")
     }
 )
 @Data
@@ -105,6 +106,14 @@ public class SchedulingIntent {
     /** Target snapshot observed immediately before first publication. */
     @Column(name = "baseline_snapshot_id", updatable = false, length = 255)
     private String baselineSnapshotId;
+
+    /** Stable writer job that exclusively owns the target physical table. */
+    @Column(name = "writer_job_key", updatable = false, length = 255)
+    private String writerJobKey;
+
+    /** Writer generation that must produce the attributable target snapshot. */
+    @Column(name = "writer_epoch", updatable = false)
+    private Long writerEpoch;
 
     /** Engine-neutral STREAMING or BATCH mode frozen from the published node. */
     @Column(name = "processing_mode", nullable = false, updatable = false, length = 32)

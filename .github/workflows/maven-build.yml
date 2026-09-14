@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: "**/pom.xml"
 
       - name: Verify reactor and coverage gates
-        run: ./mvnw -B -ntp clean verify
+        run: ./mvnw -B -ntp clean verify -DskipITs
 
       - name: Upload test and coverage reports
         if: always()

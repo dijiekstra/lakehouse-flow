@@ -70,6 +70,7 @@ public class SchedulingIntentService {
     private final SchedulingTargetAdmissionService schedulingTargetAdmissionService;
     private final FlowPlanPolicyService flowPlanPolicyService;
     private final InputSnapshotEvidenceService inputSnapshotEvidenceService;
+    private final WriterJobBindingService writerJobBindingService;
 
     /** Global fallback for legacy tasks without a frozen FlowPlan policy. */
     @Value("${lakehouse-flow.snapshot-confirmation.timeout:PT1H}")
@@ -129,6 +130,8 @@ public class SchedulingIntentService {
      * @param bizDate business date represented by the instruction
      * @param targetAssetKey managed asset whose snapshot confirms the result
      * @param baselineSnapshotId snapshot frozen before publication
+     * @param writerJobKey stable writer owning the target physical table
+     * @param writerEpoch fenced writer generation for this data instruction
      * @param processingMode engine-neutral STREAMING or BATCH mode
      * @param inputSnapshotVector complete frozen parent and external input evidence
      * @param instructionPayload complete immutable downstream instruction
@@ -159,6 +162,8 @@ public class SchedulingIntentService {
             LocalDateTime bizDate,
             String targetAssetKey,
             String baselineSnapshotId,
+            String writerJobKey,
+            Long writerEpoch,
             String processingMode,
             List<Map<String, Object>> inputSnapshotVector,
             Map<String, Object> instructionPayload,
@@ -274,6 +279,20 @@ public class SchedulingIntentService {
                             + admission.holderTaskInstanceId() + " until " + admission.expiresAt()
                             + ": " + targetAssetKey + "@" + bizDate);
         }
+        WriterJobBindingService.WriterLease writerLease = writerJobBindingService.reserveDataIntent(
+                task.getScheduleNodeId(),
+                targetAssetKey,
+                inputEvidence.processingMode(),
+                intentKey,
+                admission.expiresAt());
+        if (!writerLease.admitted()) {
+            schedulingTargetAdmissionService.release(
+                    targetAssetKey,
+                    bizDate,
+                    task.getId(),
+                    "WRITER_ADMISSION_REJECTED");
+            throw new SchedulingAdmissionConflictException(writerLease.rejectionReason());
+        }
         String baselineSnapshotId = snapshotProgressService.findLatestSnapshotId(targetAssetKey)
                 .orElse(null);
         LocalDateTime now = LocalDateTime.now();
@@ -284,6 +303,8 @@ public class SchedulingIntentService {
                 context.backfillItem(),
                 targetAssetKey,
                 baselineSnapshotId,
+                writerLease.writerJobKey(),
+                writerLease.writerEpoch(),
                 inputEvidence.processingMode(),
                 inputSnapshotVector,
                 admission.expiresAt(),
@@ -308,6 +329,8 @@ public class SchedulingIntentService {
                 .bizDate(task.getBizDate())
                 .targetAssetKey(targetAssetKey)
                 .baselineSnapshotId(baselineSnapshotId)
+                .writerJobKey(writerLease.writerJobKey())
+                .writerEpoch(writerLease.writerEpoch())
                 .processingMode(inputEvidence.processingMode())
                 .inputSnapshotVectorJson(inputSnapshotVector)
                 .instructionPayloadJson(instructionPayload)
@@ -520,6 +543,8 @@ public class SchedulingIntentService {
                 intent.getBizDate(),
                 intent.getTargetAssetKey(),
                 intent.getBaselineSnapshotId(),
+                intent.getWriterJobKey(),
+                intent.getWriterEpoch(),
                 intent.getProcessingMode(),
                 intent.getInputSnapshotVectorJson(),
                 intent.getInstructionPayloadJson(),
@@ -573,6 +598,8 @@ public class SchedulingIntentService {
      * @param backfillItem owning backfill item, or null
      * @param targetAssetKey resolved target asset key
      * @param baselineSnapshotId snapshot frozen before publication, or null
+     * @param writerJobKey stable writer owning the physical table
+     * @param writerEpoch fenced writer generation
      * @param processingMode engine-neutral STREAMING or BATCH mode
      * @param inputSnapshotVector complete parent and external input evidence
      * @param admissionExpiresAt latest time at which downstream may start this intent
@@ -587,6 +614,8 @@ public class SchedulingIntentService {
             BackfillItem backfillItem,
             String targetAssetKey,
             String baselineSnapshotId,
+            String writerJobKey,
+            Long writerEpoch,
             String processingMode,
             List<Map<String, Object>> inputSnapshotVector,
             LocalDateTime admissionExpiresAt,
@@ -604,6 +633,12 @@ public class SchedulingIntentService {
         definition.put("taskCode", task.getTaskCode());
         definition.put("taskVersion", task.getTaskVersion());
 
+        Map<String, Object> writer = new LinkedHashMap<>();
+        writer.put("writerJobKey", writerJobKey);
+        writer.put("writerEpoch", writerEpoch);
+        writer.put("tableAssetKey", io.github.lakehouseflow.common.AssetKeys.tableKey(targetAssetKey)
+                .orElseThrow(() -> new IllegalStateException("Invalid scheduling target table: " + targetAssetKey)));
+
         Map<String, Object> schedule = new LinkedHashMap<>();
         schedule.put("triggerType", requireTriggerType(workflow));
         schedule.put("triggerEventId", workflow.getTriggerEventId());
@@ -619,6 +654,12 @@ public class SchedulingIntentService {
         requiredSnapshotProperties.put(
                 SnapshotEvidenceContract.INTENT_KEY_PROPERTY,
                 intentKey);
+        requiredSnapshotProperties.put(
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                writerJobKey);
+        requiredSnapshotProperties.put(
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                Long.toString(writerEpoch));
         requiredSnapshotProperties.put(
                 SnapshotEvidenceContract.TARGET_ASSET_PROPERTY,
                 targetAssetKey);
@@ -663,6 +704,7 @@ public class SchedulingIntentService {
         payload.put("issuedAt", issuedAt.toString());
         payload.put("identity", identity);
         payload.put("definition", definition);
+        payload.put("writer", writer);
         payload.put("schedule", schedule);
         payload.put("processing", processing);
         payload.put("schedulingPolicy", schedulingPolicy);

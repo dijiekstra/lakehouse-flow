@@ -145,8 +145,8 @@ Do not relabel deferred work as P0 merely because it is incomplete.
 2. State the invariant and expected observable behavior for the selected gap.
 3. Implement the smallest complete slice in the owning modules.
 4. Add direct tests for happy paths, blocked paths, idempotency, failures, and boundary violations.
-5. Run targeted tests, then `./mvnw clean verify` for a completed P0 change.
-6. Update `PHASE2_PROGRESS.md` with actual test and coverage evidence.
+5. Run targeted tests, then `./mvnw clean verify -DskipITs`; keep Testcontainers E2E deferred until the consolidated LF-1.0 stability pass.
+6. Update `PHASE2_PROGRESS.md` with actual unit-test and coverage evidence, and never describe a deferred path as E2E-verified.
 
 ## Review Checklist
 

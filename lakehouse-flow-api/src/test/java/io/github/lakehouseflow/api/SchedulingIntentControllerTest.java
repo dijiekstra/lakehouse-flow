@@ -82,6 +82,8 @@ class SchedulingIntentControllerTest {
                 BIZ_DATE,
                 "paimon.dwd.orders",
                 "100",
+                "writer.dwd.orders",
+                3L,
                 "BATCH",
                 List.of(),
                 Map.of("intentKey", "task-instance:22"),

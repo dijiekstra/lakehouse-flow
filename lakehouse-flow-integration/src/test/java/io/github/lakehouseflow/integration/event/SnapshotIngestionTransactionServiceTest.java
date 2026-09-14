@@ -11,7 +11,6 @@ import io.github.lakehouseflow.service.FlowPlanEvaluationService;
 import io.github.lakehouseflow.service.SnapshotTriggerRoutingService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -76,8 +75,9 @@ class SnapshotIngestionTransactionServiceTest {
                         null,
                         null,
                         "external data"));
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("1000").build();
         when(eventConsumerOffsetRepository.findForUpdate("PAIMON", "catalog.db.orders"))
-                .thenReturn(Optional.empty());
+                .thenReturn(Optional.of(offset));
 
         SnapshotIngestionTransactionService.SnapshotIngestionResult result =
                 transactionService.processSnapshot(
@@ -89,9 +89,8 @@ class SnapshotIngestionTransactionServiceTest {
                 List.of("catalog.db.orders"),
                 "1000",
                 BIZ_DATE);
-        ArgumentCaptor<EventConsumerOffset> offset = ArgumentCaptor.forClass(EventConsumerOffset.class);
-        verify(eventConsumerOffsetRepository).save(offset.capture());
-        assertEquals("1000", offset.getValue().getOffsetValue());
+        verify(eventConsumerOffsetRepository).ensureOffset("PAIMON", "catalog.db.orders", "1000");
+        verify(eventConsumerOffsetRepository, never()).save(offset);
     }
 
     /**
@@ -135,8 +134,9 @@ class SnapshotIngestionTransactionServiceTest {
                         "task-instance:42",
                         BIZ_DATE,
                         "action owned"));
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("1000").build();
         when(eventConsumerOffsetRepository.findForUpdate("PAIMON", "catalog.db.orders"))
-                .thenReturn(Optional.empty());
+                .thenReturn(Optional.of(offset));
 
         SnapshotIngestionTransactionService.SnapshotIngestionResult result =
                 transactionService.processSnapshot(
@@ -171,8 +171,9 @@ class SnapshotIngestionTransactionServiceTest {
                         "task-instance:42",
                         intentDate,
                         "natural intent"));
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("1000").build();
         when(eventConsumerOffsetRepository.findForUpdate("PAIMON", "catalog.db.orders"))
-                .thenReturn(Optional.empty());
+                .thenReturn(Optional.of(offset));
 
         transactionService.processSnapshot(
                 "catalog.db.orders", "1000", NUMERIC_OFFSET_COMPARATOR, event);
@@ -198,16 +199,16 @@ class SnapshotIngestionTransactionServiceTest {
                 .thenReturn(Optional.empty());
         when(lakehouseEventRepository.save(event)).thenReturn(event);
         when(assetStateService.projectAssetStatesFromEvent(event)).thenReturn(List.of());
+        EventConsumerOffset offset = EventConsumerOffset.builder().offsetValue("snapshot-7").build();
         when(eventConsumerOffsetRepository.findForUpdate(
-                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.empty());
+                "ICEBERG", "catalog.db.orders")).thenReturn(Optional.of(offset));
 
         transactionService.processSnapshot(
                 "catalog.db.orders", "snapshot-7", Comparator.naturalOrder(), event);
 
-        ArgumentCaptor<EventConsumerOffset> offset = ArgumentCaptor.forClass(EventConsumerOffset.class);
-        verify(eventConsumerOffsetRepository).save(offset.capture());
-        assertEquals("ICEBERG", offset.getValue().getSourceType());
-        assertEquals("snapshot-7", offset.getValue().getOffsetValue());
+        verify(eventConsumerOffsetRepository).ensureOffset(
+                "ICEBERG", "catalog.db.orders", "snapshot-7");
+        verify(eventConsumerOffsetRepository, never()).save(offset);
     }
 
     /**

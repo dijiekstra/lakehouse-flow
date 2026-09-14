@@ -61,6 +61,9 @@ class SnapshotConfirmationServiceTest {
     @Mock
     private SnapshotSourceHealthService snapshotSourceHealthService;
 
+    @Mock
+    private WriterJobBindingService writerJobBindingService;
+
     @InjectMocks
     private SnapshotConfirmationService snapshotConfirmationService;
 
@@ -93,7 +96,7 @@ class SnapshotConfirmationServiceTest {
     @Test
     void confirmsTaskWhenTargetSnapshotAdvancedBeyondBaseline() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusMinutes(5));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -114,6 +117,28 @@ class SnapshotConfirmationServiceTest {
                 TASK_ID,
                 "SNAPSHOT_CONFIRMED");
         verify(dagProgressionService).onSnapshotConfirmed(TASK_ID);
+        verify(writerJobBindingService).releaseDataIntent(
+                "writer.dwd.orders", 3L, "task-instance:42");
+    }
+
+    /** Verify a stale scanner can re-read an already confirmed task without repeating side effects. */
+    @Test
+    void returnsConfirmedResultIdempotentlyForStaleScanner() {
+        TaskInstance task = scheduledTask(LocalDateTime.now().minusMinutes(5));
+        task.setState(SchedulingStates.SNAPSHOT_CONFIRMED);
+        task.setObservedSnapshotId("101");
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
+
+        SnapshotConfirmationResult result = snapshotConfirmationService.checkTaskSnapshotProgress(
+                TASK_ID,
+                Duration.ofHours(1));
+
+        assertTrue(result.snapshotAdvanced());
+        assertEquals(SchedulingStates.SNAPSHOT_CONFIRMED, result.resultingState());
+        assertEquals("101", result.observedSnapshotId());
+        verify(schedulingIntentRepository, never()).findByTaskInstanceId(any());
+        verify(taskInstanceService, never()).confirmSnapshotProgress(any(), any(), any(), any());
+        verify(dagProgressionService, never()).onSnapshotConfirmed(any());
     }
 
     /**
@@ -122,7 +147,7 @@ class SnapshotConfirmationServiceTest {
     @Test
     void recordsSnapshotCheckButKeepsTaskScheduledBeforeTimeout() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusMinutes(5));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -152,7 +177,7 @@ class SnapshotConfirmationServiceTest {
     @Test
     void marksTaskNotAdvancedWhenConfirmationWindowExpired() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusHours(2));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -184,7 +209,7 @@ class SnapshotConfirmationServiceTest {
     @Test
     void keepsTaskScheduledWhenSourceCannotProveCompleteWindow() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusHours(2));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -222,7 +247,7 @@ class SnapshotConfirmationServiceTest {
     @Test
     void marksTaskNotAdvancedUsingFrozenNodeTimeout() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusMinutes(30));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -254,7 +279,7 @@ class SnapshotConfirmationServiceTest {
     void checkScheduledTasksChecksEachScheduledTask() {
         TaskInstance task = scheduledTask(LocalDateTime.now().minusMinutes(5));
         when(taskInstanceRepository.findScheduledAwaitingSnapshotConfirmation()).thenReturn(List.of(task));
-        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        when(taskInstanceRepository.findByIdForUpdate(TASK_ID)).thenReturn(Optional.of(task));
         SchedulingIntent intent = schedulingIntent();
         when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
         when(snapshotEvidenceService.evaluateIntentProgress(intent))
@@ -289,6 +314,8 @@ class SnapshotConfirmationServiceTest {
                 .bizDate(LocalDateTime.of(2026, 9, 13, 0, 0))
                 .targetAssetKey(TARGET_ASSET_KEY)
                 .baselineSnapshotId("100")
+                .writerJobKey("writer.dwd.orders")
+                .writerEpoch(3L)
                 .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
                 .build();
     }

@@ -45,7 +45,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class SchedulingIntentDelivery {
+public class SchedulingIntentDelivery implements ReliableIntentDelivery {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

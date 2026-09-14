@@ -97,6 +97,7 @@ public class FlowPlanController {
                 request.dependsOnNodes(),
                 request.inputDependencySpecJson(),
                 request.outputAssetKey(),
+                request.writerJobKey(),
                 request.confirmationPolicyJson(),
                 request.sortOrder()));
         return toResponse(node);
@@ -205,6 +206,7 @@ public class FlowPlanController {
                 node.getDependsOnNodes(),
                 node.getInputDependencySpecJson(),
                 node.getOutputAssetKey(),
+                node.getWriterJobKey(),
                 node.getConfirmationPolicyJson(),
                 node.getSortOrder(),
                 node.getCreatedAt(),

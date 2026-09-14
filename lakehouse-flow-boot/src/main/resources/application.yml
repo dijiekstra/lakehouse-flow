@@ -65,6 +65,23 @@ lakehouse-flow:
       maximum-backoff: PT5M
     metrics:
       fixed-delay-ms: 10000
+  job-control-intent-delivery:
+    # Control intents use an independent table but the same publisher SPI and reliability semantics.
+    channel: ${LAKEHOUSE_FLOW_JOB_CONTROL_CHANNEL:DATABASE_TABLE}
+    destination: ${LAKEHOUSE_FLOW_JOB_CONTROL_DESTINATION:job_control_intent}
+    deliver-window: PT10M
+    confirmation-timeout: PT10M
+    publisher:
+      enabled: true
+      fixed-delay-ms: 1000
+      batch-size: 100
+      claim-lease: PT30S
+      max-attempts: 8
+      initial-backoff: PT1S
+      maximum-backoff: PT5M
+  job-control-snapshot-confirmation:
+    enabled: true
+    fixed-delay-ms: 30000
   snapshot-confirmation:
     enabled: true
     fixed-delay-ms: 30000
