@@ -25,7 +25,9 @@ user: postgres
 password: postgres
 ```
 
-`docker-compose.yml` 会把 `lakehouse-flow-dao/src/main/resources/db/migration` 挂载到 PostgreSQL 初始化目录。已经初始化过的 volume 不会自动重放修改后的 SQL；如果需要重建本地库：
+`docker-compose.yml` 只创建空数据库，应用启动时由 classpath 中的 Flyway migration 按版本顺序建表和升级。不要把 `V*.sql` 直接挂到 PostgreSQL 初始化目录，否则 PostgreSQL 会按文件名字典序执行，无法保证 Flyway 版本顺序。
+
+如果需要重建本地开发库：
 
 ```bash
 docker compose down -v
@@ -35,8 +37,10 @@ docker compose up -d postgres
 ## 构建与测试
 
 ```bash
-./mvnw clean test
+./mvnw clean verify
 ```
+
+`verify` 会执行全模块测试，并强制检查 service 模块 line coverage >= 90%、branch coverage >= 65%。局部开发可以先运行 `./mvnw -pl <module> -am test`，完成一项变更前仍需回到全量 `verify`。
 
 如果只想做编译检查：
 
@@ -59,13 +63,14 @@ cd lakehouse-flow-boot
 
 ```bash
 ./mvnw clean package -DskipTests
-java -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
+source .mavenrc
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
 ```
 
 健康检查：
 
 ```bash
-curl http://localhost:8080/actuator/health
+curl --noproxy '*' http://localhost:8080/actuator/health
 ```
 
 ## 当前模块
@@ -77,8 +82,8 @@ lakehouse-flow-dao          repositories and Flyway schema migrations
 lakehouse-flow-service      domain services
 lakehouse-flow-integration  lakehouse snapshot source SPI and adapters
 lakehouse-flow-api          FlowPlan/Node、action、instance、intent、backfill query REST API
-lakehouse-flow-scheduler    snapshot 确认扫描循环
-lakehouse-flow-test         shared test placeholder
+lakehouse-flow-scheduler    intent outbox、外部投递、snapshot 确认和积压指标扫描
+lakehouse-flow-test         整体 Testcontainers E2E 的共享装配入口
 lakehouse-flow-boot         Spring Boot application
 ```
 
@@ -93,12 +98,10 @@ lakehouse-flow-boot         Spring Boot application
 - workflow/task instance 的状态应使用 `SchedulingStates`，不要引入 `RUNNING/SUCCESS/FAILED` 这类执行生命周期状态。
 - 写入 `trigger_history.evaluation_payload_json` 时必须保持 JSONB 结构化数据。
 - 如果新增 REST API，优先放在 `lakehouse-flow-api`，不要把 Controller 写进 boot 模块。
-- 如果新增真实 Paimon source，先抽接口，再把当前 mock 实现限制在测试或本地 demo profile。
+- 新增湖格式时只实现 `LakehouseSnapshotSource` SPI；格式原生 operation、offset 和分区差异不得泄漏到调度核心。
 
-## 推荐下一步
+## 当前推进依据
 
-1. 增强 scheduling intent 主动投递：HTTP/MQ publisher、内部投递 lease、退避重试和死信审计。
-2. 保持所有常规 snapshot 触发都经过 `FlowPlanVersion` 和 `ScheduleNode`，不要恢复旧的单表依赖触发路径。
-3. 扩展 Flow 实例聚合查询和运维指标；发布版本的确认窗口、目标准入租约和基础活跃实例上限已进入运行时。
-4. 明确 `trigger_key` 生成规则，并为重复触发写数据库约束测试。
-5. 给 `EventIngestionService` 和 `AssetStateService` 增加更贴近数据库的集成测试。
+不要在本开发指南中复制阶段待办。下一推进项、优先级和退出标准只读取 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md)，以免已经完成的工作继续出现在旧清单中。
+
+当前不可退让的开发顺序是：先检查进度基准和权威架构，再阅读相关实现与测试，完成修改后使用 Maven Wrapper 验证。当前优先级是 `LF1-01` source-aware confirmation，之后依次补齐 G20 `WriterJobBinding`、独立 `JobControlIntent` / delivery 与单表单写入者约束，再完成 G19 引擎无关的 `STREAMING|BATCH` 节点和混合父边 snapshot 证据契约，并实现 Flink CDC ODS、Flink/Paimon 参考 writer 和整体 E2E。不得放宽现有 `SchedulingIntent` 的 task 非空约束来承载作业生命周期，也不得把 Flink/Spark 类型带入 Flow 或通用 intent。整体 Testcontainers E2E 是 `LF-1.0` 发布门槛，不用零散模块测试冒充。

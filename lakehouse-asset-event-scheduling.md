@@ -1,5 +1,7 @@
 # DolphinScheduler 湖仓资产版本事件驱动调度设计文档
 
+> 参考文档：本文讨论的是 DolphinScheduler 扩展方案，不是当前独立 Lakehouse Flow 的架构或实现路线。只可参考湖仓调度背景与 DolphinScheduler action 语义，不得引入本文的 Master/Worker、executor、任务运行状态或 callback 设计；当前边界以 `ARCHITECTURE.md` 和 `SCHEDULING_MODEL_DESIGN.md` 为准。
+>
 > 状态：Draft / RFC
 > 作者：Dolphin Agent
 > 关联模块：dolphinscheduler-dao, dolphinscheduler-service, dolphinscheduler-master, dolphinscheduler-api, dolphinscheduler-task-plugin

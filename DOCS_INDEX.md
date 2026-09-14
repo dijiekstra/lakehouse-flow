@@ -1,264 +1,98 @@
 # Lakehouse Flow 文档索引
 
 **最后更新**: 2026-09-13
-**阶段**: Snapshot 推进式调度系统持续实现
 
-> 后续开发进度、版本目标和差距检查以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准。
->
-> 当前架构语义以 [README.md](./README.md)、[ARCHITECTURE.md](./ARCHITECTURE.md) 和 [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) 为准。标记为“历史”的文档只用于追溯早期方案，其中的 executor callback、`RUNNING/SUCCESS/FAILED` 不代表当前系统设计。
-
-## 📚 快速导航
-
-### 🎯 系统定位和设计原则
-
-| 文档 | 用途 | 长度 |
-|------|------|------|
-| [README.md](./README.md) | **必读** - 当前系统边界、能力和运行方式 | 5分钟 |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | **权威** - 当前 snapshot 调度架构和核心循环 | 15分钟 |
-| [CLARIFICATION_SUMMARY.md](./CLARIFICATION_SUMMARY.md) | 历史 - 早期定位澄清 | 5分钟 |
-| [ARCHITECTURE_CLARIFICATION.md](./ARCHITECTURE_CLARIFICATION.md) | 历史 - 旧集成协议，不作为当前实现依据 | 10分钟 |
-
-### 🚀 实现指南
-
-| 文档 | 用途 | 长度 |
-|------|------|------|
-| [PHASE1_COMPLETION.md](./PHASE1_COMPLETION.md) | 历史 - Phase 1 完成报告 | 10分钟 |
-| [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) | **进度基准** - 版本目标、差距清单、当前推进项和验证口径 | 10分钟 |
-| [PHASE2_DESIGN.md](./PHASE2_DESIGN.md) | 历史 - 旧 Phase 2 设计，不作为当前状态语义 | 20分钟 |
-| [PHASE2_ROADMAP.md](./PHASE2_ROADMAP.md) | 历史 - 旧路线图 | 15分钟 |
-
-### 💡 原理和设计
-
-| 文档 | 用途 | 长度 |
-|------|------|------|
-| [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | **权威** - snapshot 对象模型、Flow 隔离、action 和补数 DAG 原则 | 20分钟 |
-| [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | **权威** - 下游指令字段、消费幂等和 snapshot 归因约定 | 10分钟 |
-| [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md) | 历史 - 原则草案，冲突时服从权威文档 | 10分钟 |
-| [GLOSSARY.md](./GLOSSARY.md) | 历史 - 旧术语和执行状态机 | 10分钟 |
-
-### 🔧 开发和部署
-
-| 文档 | 用途 | 长度 |
-|------|------|------|
-| [README.md](./README.md) | 项目概览、快速开始、特性列表 | 5分钟 |
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | 本地开发环境、代码规范、编译运行 | 10分钟 |
-| [TECH_STACK.md](./TECH_STACK.md) | 技术栈详情、依赖版本、配置 | 5分钟 |
-
-### 🎓 学习资料
-
-| 文档 | 用途 | 长度 |
-|------|------|------|
-| [lakehouse-asset-event-scheduling.md](./lakehouse-asset-event-scheduling.md) | 参考文档：snapshot 驱动调度的原理 | 30分钟 |
-| [现代CDC湖仓架构下的数仓与数据平台演进.md](./现代CDC湖仓架构下的数仓与数据平台演进.md) | 参考文档：湖仓架构背景 | 30分钟 |
-
----
-
-## 🎯 不同角色的阅读指南
-
-### 👨‍💼 项目经理 / 产品经理
-
-**目标**: 了解系统能做什么
-
-**推荐阅读顺序**:
-1. [README.md](./README.md) - 项目概览和特性
-2. [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - 对象模型和 action 能力
-3. [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 当前完成度和剩余差距
-
-**时间投入**: 20 分钟
-
----
-
-### 👨‍💻 后端开发 / 架构师
-
-**目标**: 理解系统设计和实现细节
-
-**推荐阅读顺序**:
-1. [README.md](./README.md) - 当前边界
-2. [ARCHITECTURE.md](./ARCHITECTURE.md) - 当前架构
-3. [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - 对象模型、Flow 隔离和 action 语义
-4. [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 实现进度和剩余差距
-
-**时间投入**: 1 小时
-
----
-
-### 🔨 Phase 2 实现工程师
-
-**目标**: 按照设计实现 Phase 2 功能
-
-**推荐阅读顺序**:
-1. [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 当前版本目标和差距基准
-2. [ARCHITECTURE.md](./ARCHITECTURE.md) - 当前组件与循环
-3. [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - 目标语义和不变量
-4. [DEVELOPMENT.md](./DEVELOPMENT.md) - 本地开发环境
-
-**时间投入**: 1.5 小时
-
----
-
-### 🧪 测试工程师
-
-**目标**: 设计测试用例和测试策略
-
-**推荐阅读顺序**:
-1. [README.md](./README.md) - 功能特性和测试入口
-2. [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - DAG、snapshot 和 action 不变量
-3. [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 当前验收基线和测试策略
-
-**时间投入**: 1 小时
-
----
-
-### 📊 下游系统集成工程师
-
-**目标**: 集成 Lakehouse Flow 到自己的系统
-
-**推荐阅读顺序**:
-1. [README.md](./README.md) - 理解系统定位
-2. [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) - 完整指令和 snapshot 归因要求
-3. [ARCHITECTURE.md](./ARCHITECTURE.md) - 主动投递与 snapshot 确认流程
-4. [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - 下游边界和 action 影响
-
-**时间投入**: 30 分钟
-
----
-
-## 📋 按主题查找
-
-### 依赖关系和条件评估
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - FlowPlan 条件评估、自然触发与 snapshot 证据链
-- [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - DependencySpec、DAG 门禁和调度实例语义
-- [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 当前实现范围与尚未完成项
-
-### Flow 隔离、重跑和补数
-
-- [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - FlowPlan 隔离 / 权限 / Rerun / Backfill
-
-### 并发和幂等性
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - snapshot 事件事务、意图 claim 和版本控制
-- [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 已完成的原子性能力和后续并发差距
-
-### 监控和可观测性
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - action、intent、snapshot confirmation 审计链
-- [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) - 生产可观测性待办
-
-### 下游系统集成
-
-- [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) - 完整 instruction payload 与 snapshot 标记规则
-- [README.md](./README.md) - 当前最小 API 与数据库 outbox 示例
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - 调度侧与下游执行侧的职责边界
-- [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) - action 对下游和 snapshot 的影响
-
-### 扩展和定制
-
-- [PHASE2_ROADMAP.md](./PHASE2_ROADMAP.md) - 后续优化方向
-- [DEVELOPMENT.md](./DEVELOPMENT.md) - 代码规范和扩展指南
-
----
-
-## 🗂️ 文件组织
-
-```
-lakehouse-flow/
-├── 📚 文档（按阅读优先级）
-│   ├── README.md                          项目概览 ⭐⭐⭐
-│   ├── ARCHITECTURE.md                    当前完整架构 ⭐⭐⭐
-│   ├── PHASE2_PROGRESS.md                 当前进度基准 ⭐⭐⭐
-│   ├── SCHEDULING_MODEL_DESIGN.md         当前对象模型 ⭐⭐⭐
-│   ├── DEVELOPMENT.md                     开发指南 ⭐
-│   ├── TECH_STACK.md                      技术栈 ⭐
-│   ├── 其余阶段性文档                     历史方案，仅供追溯
-│   └── 参考资料
-│       ├── lakehouse-asset-event-scheduling.md
-│       └── 现代CDC湖仓架构下的数仓与数据平台演进.md
-│
-├── 📦 代码模块
-│   ├── lakehouse-flow-model/               Entity 层
-│   ├── lakehouse-flow-dao/                 Repository 层
-│   ├── lakehouse-flow-service/             Service 层
-│   ├── lakehouse-flow-integration/         适配器层
-│   ├── lakehouse-flow-api/                 API 层
-│   ├── lakehouse-flow-scheduler/           后台任务层
-│   ├── lakehouse-flow-boot/                启动层
-│   └── lakehouse-flow-common/              公共工具
-│
-└── 🔧 配置和脚本
-    ├── pom.xml                             Maven 配置
-    ├── docker-compose.yml                  本地开发环境
-    └── db/                                 数据库脚本
-```
-
----
-
-## 📈 学习路径
-
-### 快速了解（15 分钟）
-1. README.md
-2. ARCHITECTURE.md（边界与核心链路）
-
-### 深入学习（1 小时）
-1. ARCHITECTURE.md
-2. SCHEDULING_MODEL_DESIGN.md
-3. PHASE2_PROGRESS.md
-
-### 准备开发（2 小时）
-1. 以上全部
-2. DEVELOPMENT.md
-3. README.md（构建与 API 示例）
-
----
-
-## ✅ 常见问题快速查答
-
-| 问题 | 文档 | 位置 |
-|------|------|------|
-| Lakehouse Flow 是什么？| README.md | 核心理念 |
-| 系统能做什么？| ARCHITECTURE.md | 系统职责 |
-| 系统不能做什么？| ARCHITECTURE.md | 边界与非目标 |
-| 怎样与下游系统集成？| SCHEDULING_INTENT_CONTRACT.md | 指令结构与下游规则 |
-| 当前完成了什么？| PHASE2_PROGRESS.md | 进度基准 |
-| 下一步要做什么？| PHASE2_PROGRESS.md | 版本目标与差距 |
-| 目标对象模型是什么？| SCHEDULING_MODEL_DESIGN.md | 推荐对象模型 |
-| 多用户隔离和共享怎么设计？| SCHEDULING_MODEL_DESIGN.md | Flow 隔离与共享 |
-| 重跑和补数怎么设计？| SCHEDULING_MODEL_DESIGN.md | 能力设计 |
-| 怎样本地开发？| DEVELOPMENT.md | 快速开始 |
-| 数据模型是什么？| SCHEDULING_MODEL_DESIGN.md | 核心对象 |
-
----
-
-## 🔄 文档更新历史
-
-| 日期 | 事件 | 文档变更 |
-|------|------|---------|
-| 2026-09-11 | 架构定位澄清 | +CLARIFICATION_SUMMARY.md, 更新 README.md |
-| 2026-09-11 | Phase 1 完成 | +PHASE1_COMPLETION.md |
-| 2026-09-11 | Phase 2 设计 | +PHASE2_DESIGN.md, +PHASE2_ROADMAP.md |
-| 2026-09-10 | 初始架构设计 | +ARCHITECTURE.md, +DESIGN_PRINCIPLES.md, +GLOSSARY.md |
-| 2026-09-12 | 对象模型重新设计 | +SCHEDULING_MODEL_DESIGN.md |
-
----
-
-## 💬 如何使用这个索引
-
-1. **找不到想要的信息？** 
-   - 用 Ctrl+F 在本文档中搜索关键词
-   - 查看"按主题查找"部分
-
-2. **不知道从哪里开始？**
-   - 找到你的角色，按推荐顺序阅读
-
-3. **想快速答疑？**
-   - 查看"常见问题快速查答"
-
-4. **需要找到代码对应的文档？**
-   - 查看"文件组织"了解代码结构
-   - 找到对应模块的文档
-
----
-
-**最后更新**: 2026-09-11  
-**维护者**: Copilot  
-**许可证**: Apache 2.0
+## 文档真源
+
+文档按以下优先级解释：
+
+1. `PHASE2_PROGRESS.md`：版本目标、优先级、当前完成度、差距和验证快照的唯一真源。
+2. `ARCHITECTURE.md`、`SCHEDULING_MODEL_DESIGN.md`：当前架构与对象模型不变量。
+3. `SCHEDULING_INTENT_CONTRACT.md`：Lakehouse Flow 与下游之间的协议真源。
+4. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
+5. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
+
+如果历史文档与当前文档冲突，必须服从上述当前真源。任何文档都不能把 Lakehouse Flow 描述为任务执行器，也不能使用下游 `RUNNING/SUCCESS/FAILED` 回调代替目标业务 snapshot 推进。
+
+## 当前文档
+
+| 文档 | 状态 | 回答的问题 |
+|---|---|---|
+| [README.md](./README.md) | 当前入口 | 系统是什么、能做什么、不能做什么 |
+| [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) | 进度真源 | 当前做到哪里、下一步是什么、验收证据是什么 |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | 架构真源 | 组件、事务、扫描循环、归因与互斥如何协作 |
+| [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | 模型真源 | FlowPlan、Node、实例、action、补数和 DAG 的语义 |
+| [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 协议真源 | 数据处理与作业控制两类出站意图如何投递、幂等，以及目标 snapshot 必须写什么 |
+| [DEVELOPMENT.md](./DEVELOPMENT.md) | 当前开发指南 | 本地环境、代码约束和验证方式 |
+| [QUICKSTART.md](./QUICKSTART.md) | 当前启动指南 | 如何启动 PostgreSQL、构建、运行和排查 |
+| [TECH_STACK.md](./TECH_STACK.md) | 当前技术基线 | 实际依赖、模块边界、已实现与未实现的基础设施 |
+
+## 历史文档
+
+以下文件保留早期决策过程和阶段记录，但不代表当前能力：
+
+| 文档 | 历史内容 |
+|---|---|
+| [ARCHITECTURE_CLARIFICATION.md](./ARCHITECTURE_CLARIFICATION.md) | 早期 READY 查询和 callback 方案 |
+| [CLARIFICATION_SUMMARY.md](./CLARIFICATION_SUMMARY.md) | 早期架构澄清过程 |
+| [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md) | 含已失效示例的原则草案 |
+| [GLOSSARY.md](./GLOSSARY.md) | 旧 executor 和运行状态术语 |
+| [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md) | 旧状态判断和 READY API 实现讨论 |
+| [PHASE1_IMPLEMENTATION.md](./PHASE1_IMPLEMENTATION.md) | 旧 Phase 1 计划 |
+| [PHASE1_COMPLETION.md](./PHASE1_COMPLETION.md) | 旧 Phase 1 完成快照 |
+| [PHASE2_DESIGN.md](./PHASE2_DESIGN.md) | 旧 Phase 2 callback/执行状态设计 |
+| [PHASE2_ROADMAP.md](./PHASE2_ROADMAP.md) | 已被当前进度基准替代的路线图 |
+| [PHASE2_DELIVERY_PATTERN.md](./PHASE2_DELIVERY_PATTERN.md) | 已废弃的 READY API 交付讨论 |
+| [PHASE2_STEP3_SUMMARY.md](./PHASE2_STEP3_SUMMARY.md) | 早期 source 实现快照 |
+| [CHECKLIST.md](./CHECKLIST.md) | 旧项目交付清单 |
+| [PROJECT_STATUS.md](./PROJECT_STATUS.md) | 旧项目状态快照 |
+| [DELIVERY_REPORT.md](./DELIVERY_REPORT.md) | Phase 0 文档交付报告 |
+| [SKELETON_COMPLETION_REPORT.md](./SKELETON_COMPLETION_REPORT.md) | 项目骨架阶段报告 |
+
+历史文档中的 `AssetDependency` 运行时路径、executor、外部 job、READY 拉取 API、状态回调和旧表清单均不应恢复。
+
+## 参考资料
+
+| 文档 | 使用边界 |
+|---|---|
+| [lakehouse-asset-event-scheduling.md](./lakehouse-asset-event-scheduling.md) | DolphinScheduler 扩展 RFC；只参考背景与 action，不参考执行架构 |
+| [现代CDC湖仓架构下的数仓与数据平台演进.md](./现代CDC湖仓架构下的数仓与数据平台演进.md) | CDC 湖仓、数仓与数据平台背景资料 |
+
+## 按角色阅读
+
+### 产品与架构讨论
+
+1. `README.md`
+2. `SCHEDULING_MODEL_DESIGN.md`
+3. `PHASE2_PROGRESS.md`
+
+### 后端开发
+
+1. `PHASE2_PROGRESS.md`
+2. `ARCHITECTURE.md`
+3. 对应领域的 `SCHEDULING_MODEL_DESIGN.md` 或 `SCHEDULING_INTENT_CONTRACT.md`
+4. `DEVELOPMENT.md`
+5. 相关代码和测试
+
+### 下游集成
+
+1. `SCHEDULING_INTENT_CONTRACT.md`
+2. `ARCHITECTURE.md`
+3. `QUICKSTART.md`
+
+### 测试与投产验收
+
+1. `PHASE2_PROGRESS.md` 的 `LF-1.0 目标与发布门槛`
+2. `PHASE2_PROGRESS.md` 的当前验证快照
+3. `SCHEDULING_MODEL_DESIGN.md` 的不变量
+4. `ARCHITECTURE.md` 的事务、互斥和失败关闭路径
+5. `SCHEDULING_INTENT_CONTRACT.md` 的归因、Flink/Paimon writer 和租约要求
+
+## 更新规则
+
+- 版本目标、优先级和完成度只更新 `PHASE2_PROGRESS.md`，其他文档通过链接引用。
+- 架构或对象语义变化必须同步更新对应权威文档和测试。
+- 下游 payload 或归因属性变化必须同步更新 `SCHEDULING_INTENT_CONTRACT.md`。
+- 依赖、模块或构建方式变化必须同步更新 `TECH_STACK.md`、`DEVELOPMENT.md` 或 `QUICKSTART.md`。
+- 阶段总结一旦过期，保留内容但在标题后明确标记为历史。
+- 未经过测试或真实环境验证的能力必须写成“未验证”或“未实现”，不得写成“生产就绪”。

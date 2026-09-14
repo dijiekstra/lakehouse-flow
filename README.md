@@ -5,7 +5,7 @@
 
 Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
-当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。真实环境整体 E2E、Iceberg/Hudi 适配器、具体 MQ 产品绑定和 UI 仍是后续工作。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。
+当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准。
 
 ## 一句话边界
 
@@ -44,7 +44,7 @@ Lakehouse Flow 当前应该回答：
 | SchedulingAction | 基础版 | 支持 workflow 重跑、task instance 重跑、published FlowPlan node 重跑、统一批次化的完整 Flow/Node 子图补数、全范围或单失败节点级联恢复、安全整日跳过、补数批次暂停/恢复交付/取消、取消、跳过和 snapshot 重检 |
 | REST API | 基础版 | 暴露 FlowPlan/Node、action command/query、instance evidence、已发布 scheduling intent 审计和 backfill query/control API；不存在供下游抢任务的 ready/claim/deliver API |
 | SchedulingIntent Delivery | 基础版 | Lakehouse Flow 内部扫描 READY 决策，冻结 baseline，并按单一选定路由写入版本化完整指令；数据库立即可见，HTTP 由 Java 17 client 主动调用，MQ 通过 broker-neutral gateway 发布，外部投递支持租约、fencing、退避和死信审计 |
-| Target-Date Admission | 基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化发布槽位；冲突任务保持 READY，snapshot 确认或确认超时后释放 |
+| Target-Date Admission | 基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化发布槽位；冲突任务保持 READY，snapshot 确认或发布准入租约过期后释放；它尚不提供单表 writer 唯一绑定 |
 | 补偿/运维视图 | 基础版 | 已有 snapshot 确认扫描、补数批次查询，以及按 Flow/版本/节点筛选和按 action key 展开的 snapshot 证据联查；UI 仍未实现 |
 | 执行器 | 不属于职责 | 本项目只做调度，不提交、运行或跟踪外部任务 |
 
@@ -64,13 +64,20 @@ LakehouseSnapshotScanner
   -> WorkflowInstance + TaskInstance + TriggerHistory
   -> internal SchedulingIntentOutboxScanner
   -> scheduling_target_admission(targetAssetKey + bizDate)
+  -> writer_job_binding(tableAssetKey -> writerJobKey, LF-1.0 target)
   -> scheduling_intent + scheduling_intent_delivery
   -> SchedulingIntentDeliveryScanner (HTTP/MQ claim + push + retry)
   -> downstream polls table / receives HTTP call / consumes MQ
-  -> downstream final snapshot carries required intent properties
+  -> downstream logical-completion snapshot carries required intent properties
   -> SnapshotConfirmationScanner / SnapshotEvidenceService
   -> DagProgressionService
   -> next READY_TO_SCHEDULE intent
+
+platform START_JOB / RESTART_JOB (LF-1.0 G20 target)
+  -> writer_job_binding + next writerEpoch
+  -> independent job_control_intent + delivery
+  -> platform execution plane operates configured engine (Flink in LF-1.0)
+  -> target data snapshot carries writer-generation properties
 ```
 
 关键约束：
@@ -81,12 +88,15 @@ LakehouseSnapshotScanner
 - 调度结果只由受管目标资产中可归属于本次 intent 的 snapshot 推进确认，不读取、不接收也不依赖下游任务结果回调。
 - `SchedulingIntent` 是 Lakehouse Flow 主动发布的不可变指令；baseline 在首次发布前冻结，完整 `instructionPayload` 对数据库、HTTP 和 MQ 保持一致。
 - 正常、补数、恢复和重跑首次发布前共享目标日期准入槽；互斥只控制 Lakehouse Flow 的意图发布，不声称锁住或停止下游执行。
+- 一个 FlowPlan DAG 可以混合流式和批式节点，但同一规范化物理表只能绑定一个 `writerJobKey`。平台启动/重启该作业时创建独立 `JobControlIntent` 并推进 `writerEpoch`，执行侧负责 fencing 旧 epoch；它不伪造 task/workflow/bizDate，当前代码尚未实现这条 G20 约束。
+- Flow/Node 只知道 `processingMode=STREAMING|BATCH`，不保存 Flink、Spark 或其他执行引擎类型。流式父节点通过持续产出的资产 snapshot/watermark 为下游提供依赖证据，批式父节点通过同一调度实例的已确认输出提供证据；汇聚下游必须等待全部父边和自身依赖。
 - 发布版本策略会决定节点确认窗口、目标日期租约和版本活跃 workflow 上限；达到并发上限的任务保持 READY，不产生 intent，也不提前冻结 baseline。
-- 下游必须把 `requiredSnapshotProperties` 原样写入最终数据 snapshot；湖格式适配器把原生 operation 映射为 typed `dataChange`。维护 snapshot 只推进 source offset 和表级 `latestSnapshotId`，不推进 `latestDataSnapshotId`、分区状态、自然触发或 task 确认。
-- 补数、恢复和重跑 snapshot 会更新真实资产事实并确认所属 intent，但不会额外创建正常 `SNAPSHOT_DRIVEN` workflow；正常 intent 的最终 snapshot 和外部数据提交仍可驱动自然调度。
+- 下游必须把 `requiredSnapshotProperties` 原样写入本次逻辑输入边界完成时的数据 snapshot；湖格式适配器把原生 operation 映射为 typed `dataChange`。维护 snapshot 只推进 source offset 和表级 `latestSnapshotId`，不推进 `latestDataSnapshotId`、分区状态、自然触发或 task 确认。
+- 补数、恢复和重跑 snapshot 会更新真实资产事实并确认所属 intent，但不会额外创建正常 `SNAPSHOT_DRIVEN` workflow；正常 intent 的逻辑完成 snapshot 和外部数据提交仍可驱动自然调度。
 - `changedPartitions` 会形成独立分区状态，历史分区补数不会推进当前日期的分区资产键。
 - 传输 ACK 只作为投递证据，不能放行 DAG 或确认任务结果。完整协议见 [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md)。
-- `PENDING/PUBLISHING/RETRY_WAIT/PUBLISHED/EXHAUSTED` 只属于 delivery；其中 `EXHAUSTED` 是传输死信，不会写成 task 执行失败，也不会替代 snapshot 结果。
+- `PENDING/PUBLISHING/RETRY_WAIT/PUBLISHED/EXHAUSTED` 只属于 delivery；其中 `EXHAUSTED` 对外表达为 `DELIVERY_EXHAUSTED`，是传输死信，不会写成 task 执行失败，也不会替代 snapshot 结果。
+- source 对账 `BLOCKED` 对外表达为 `SOURCE_BLOCKED`。source 证据未追平或存在缺口时不得把确认超时写成 `SNAPSHOT_NOT_ADVANCED`，snapshot 结果必须保持待定。
 - 补数只允许显式 `startNode` 绕过其 DAG 上游；级联下游必须等同一业务日期内所有直接父节点的目标 snapshot 已确认推进。
 - 级联范围遇到缺失父节点的汇聚节点时直接拒绝，不能把缺依赖的下游意图提前交付。
 - 补数暂停/取消只阻断尚未交付的调度意图；已交付意图不会被伪装成已撤回。
@@ -124,11 +134,11 @@ password postgres
 ./mvnw clean verify
 ```
 
-默认分支 `master` 的 GitHub Actions 使用 JDK 17 和 Maven Wrapper 执行同一条命令。Service 模块在 `verify` 阶段强制要求 line coverage >= 90%、branch coverage >= 65%；校验成功后才触发 Boot JAR 构建产物 workflow。当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于后续 Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、调度决策、意图交付、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
+默认分支 `master` 的 GitHub Actions 使用 JDK 17 和 Maven Wrapper 执行同一条命令。Service 模块在 `verify` 阶段强制要求 line coverage >= 90%、branch coverage >= 65%；校验成功后才触发 Boot JAR 构建产物 workflow。当前 service 及跨层协作行为以 Mockito 单元测试为主，纯模型行为使用 JUnit，并要求 service 每个 public 方法至少有直接测试入口。Testcontainers 用于 `LF-1.0` Lakehouse Flow 系统级 E2E，从 API/事件入口贯穿 PostgreSQL/Flyway、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 与补数推进；它不归属于某个单独模块，也不替代当前单元测试。
 
 Lakehouse Flow 内部扫描 READY 决策并写入 `scheduling_intent`。每条 intent 选择一个路由：`DATABASE_TABLE` 供下游轮询专用表，`HTTP` 由内部 publisher 主动 POST，`MQ` 由内部 publisher 调用部署提供的 `SchedulingIntentMessageGateway`。下游始终被动接收，不调用 Lakehouse Flow 抢占任务。REST 接口仅供审计：
 
-下游消费 `instruction_payload_json`，并按 [Scheduling Intent 下游契约](./SCHEDULING_INTENT_CONTRACT.md) 将其中的 `requiredSnapshotProperties` 写入最终目标 snapshot。
+下游消费 `instruction_payload_json`，并按 [Outbound Intent 下游契约](./SCHEDULING_INTENT_CONTRACT.md) 将其中的 `requiredSnapshotProperties` 写入逻辑完成目标 snapshot。Flow 只传递流/批模式与冻结输入向量；具体 checkpoint、job-end 或其他提交钩子由执行适配器解释，两者使用统一调度和确认模型。
 
 ```bash
 curl 'http://localhost:8080/api/v1/scheduling-intents/tasks/42'
@@ -170,7 +180,7 @@ lakehouse-flow:
       maximum-backoff: PT5M
 ```
 
-HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接受。publisher 采用至少一次投递，`intentKey` 是下游启动幂等键。超过 `publicationAdmission.leaseExpiresAt` 的意图不再向外发布并进入传输死信，但 task 的最终判断仍只取决于是否出现可归属的目标 snapshot。
+HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接受。publisher 采用至少一次投递，`intentKey` 是下游消费幂等键。超过 `publicationAdmission.leaseExpiresAt` 的意图不再向外发布并进入传输死信，但 task 的结果判断仍只取决于是否出现可归属的目标 snapshot。
 
 调度决策、投递与 snapshot source 可观测性通过 Actuator 暴露：
 
@@ -195,7 +205,7 @@ source reconciliation 周期性核对湖表 earliest/latest、durable offset、�
 
 `startup-mode` 默认 `LATEST`，首次接入只摄入最新 snapshot 并建立一次当前事实；`EARLIEST` 会显式回放仍被保留的历史 snapshot，可能触发历史业务日期，只用于明确的数据恢复场景。常规历史补数应使用 `BackfillBatch`，不要依赖 source 回放。
 
-Paimon source 读取 snapshot properties，但普通 Paimon SQL/`BatchTableCommit` 不会自动写入 Lakehouse Flow 的单次意图属性。下游必须安装 writer-side adapter/connector 扩展，把 `requiredSnapshotProperties` 注入最终 commit；上线前用探针提交验证属性可回读。只配置 source 而没有写入扩展时，外部 snapshot 仍可驱动资产状态，Lakehouse Flow 下发的 intent 则不会被误判为成功。
+Paimon source 读取 snapshot properties，但普通 Paimon SQL/commit 链路不能假定会自动写入 Lakehouse Flow 的单次意图属性。`LF-1.0` 使用下游侧 Flink/Paimon 流批一体 writer-side adapter：批式在有界输入结束提交时注入 `requiredSnapshotProperties`，流式在 checkpoint 已覆盖 intent 冻结的 input snapshot/watermark vector 时注入。`lakehouse-flow.final=true` 表示逻辑 intent 完成，不表示流作业结束。上线前分别用流式和批式探针验证属性、分区和 `dataChange` 可回读。只配置 source 而没有写入扩展时，外部 snapshot 仍可驱动资产状态，Lakehouse Flow 下发的 intent 则不会被误判为成功。
 
 Action 审计查询示例：
 
@@ -233,13 +243,14 @@ cd lakehouse-flow-boot
 
 ```bash
 ./mvnw clean package -DskipTests
-java -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
+source .mavenrc
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
 ```
 
 健康检查：
 
 ```bash
-curl http://localhost:8080/actuator/health
+curl --noproxy '*' http://localhost:8080/actuator/health
 ```
 
 ## 模块说明
@@ -253,13 +264,15 @@ curl http://localhost:8080/actuator/health
 | `lakehouse-flow-integration` | 格式无关 snapshot source SPI、通用摄取、source 对账补偿、指标与 Paimon Catalog 适配器 |
 | `lakehouse-flow-api` | FlowPlan/Node、action command/query、instance evidence、intent 和 delivery 死信只读审计 API |
 | `lakehouse-flow-scheduler` | 内部 intent 创建、HTTP/MQ 可靠投递、delivery 指标和 snapshot 确认扫描循环 |
-| `lakehouse-flow-test` | 后续系统级 E2E 的测试装配入口；覆盖完整应用链路，不限定为本模块局部测试 |
+| `lakehouse-flow-test` | `LF-1.0` 系统级 E2E 的测试装配入口；覆盖完整应用链路，不限定为本模块局部测试 |
 | `lakehouse-flow-boot` | Spring Boot 启动模块和应用配置 |
 
 ## 下一步建议
 
-1. 继续收敛 Flow 级可信身份、授权和配额边界，不引入重型租户层。
-2. 为选定的实际 MQ 产品实现 `SchedulingIntentMessageGateway` 部署适配器。
-3. 在定义完整丢弃和优先级排队审计语义后，扩展 `SERIAL_DISCARD` / `SERIAL_PRIORITY`。
-4. Flow/Node 实例聚合、稳定游标和 Web 运维视图按当前决策后移。
-5. 整体 Testcontainers E2E 与 Iceberg/Hudi adapter 按当前阶段决策暂缓。
+1. 先完成 source-aware snapshot 超时判定，避免 source 缺口被误判为 `SNAPSHOT_NOT_ADVANCED`。
+2. 增加 `tableAssetKey -> writerJobKey` 唯一绑定、writer epoch，以及不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)` 与可靠投递。
+3. 为节点补齐引擎无关的 `processingMode=STREAMING|BATCH`，把 DAG 门禁升级为流式资产证据与批式同实例确认证据组成的 input snapshot/watermark vector，再实现 Flink/Paimon 参考 writer-side adapter。
+4. 打通业务库、Flink CDC 流式 ODS、平台作业启动/重启、DWD/DWS/ADS 混合流批 DAG、DB/HTTP、真实 Paimon、重跑和补数的整体 E2E。
+5. 完成 PostgreSQL 多 scheduler 锁竞争、中断、claim 重占、fencing、事务回滚和 offset 恢复验收。
+6. 补齐阻塞原因和 source 对账的最小运维 API，随后冻结 1.0 REST、intent 和 migration 契约。
+7. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。

@@ -1,289 +1,144 @@
-# Lakehouse Flow 技术栈
+# Lakehouse Flow 技术基线
 
-## 概览
+**最后核对**: 2026-09-13
 
-**Lakehouse Flow** 是一个从零到一实现的独立调度系统，专为现代 CDC 湖仓架构（基于 Paimon/Iceberg/Hudi）设计。
+本文只记录当前仓库实际采用的技术与明确缺口。依赖版本以根 `pom.xml` 为唯一事实来源，阶段目标以 `PHASE2_PROGRESS.md` 为准。
 
-本文档定义项目的技术决策和实现方向。
+## 架构边界
 
-## 核心技术栈
+Lakehouse Flow 是独立的 snapshot 推进式调度决策系统。技术选型服务于以下链路：
 
-### 编程语言与运行时
-- **主语言**: Java 17 LTS
-- **JVM**: OpenJDK 17+ 或 Eclipse Temurin 17+
-- **目标**: 在未来支持 GraalVM Native Image 编译
+```text
+湖仓 snapshot -> 持久化事件 -> AssetState -> FlowPlan/DAG 决策
+               -> SchedulingIntent -> 被动式下游接收
+               -> 可归因的目标业务 snapshot -> 结果确认
 
-### Web 框架
-- **Spring Boot**: 3.2.x 或 3.3.x
-  - 原因：Java 17 最小版本支持、虚拟线程友好、完整生态
-  - 依赖：Spring Web、Spring Data JPA、Spring Cache
-
-### 数据库
-- **主数据库**: PostgreSQL 12+
-  - JSONB 列类型支持（条件、配置存储）
-  - 乐观锁支持（通过 version 列）
-  - 分区表支持（大表分区）
-  
-- **可选缓存**: Redis 5.0+ (可选在 Phase 2+)
-
-### 持久化
-- **ORM**: Hibernate + Spring Data JPA
-  - 原因：成熟、类型安全、支持多数据库
-  
-- **数据库迁移**: Flyway 9.x+
-  - 原因：简单可靠、与 Spring Boot 集成好
-
-### 消息与事件
-- **Phase 1**: 仅支持轮询（polling）
-- **Phase 2+**: Kafka（可选）
-  - 事件去重和幂等性通过数据库唯一约束实现
-  - 初期不必强依赖消息队列
-
-### 序列化与数据格式
-- **JSON**: Jackson（Spring Boot 内置）
-  - 用于：API 请求/响应、条件表达式、配置存储
-  
-- **Protocol Buffers**: 可选在 Phase 2+（性能优化）
-
-### 测试框架
-- **单元测试**: JUnit 5 (Jupiter)
-- **集成测试**: Testcontainers（PostgreSQL、Redis）
-- **Mock 框架**: Mockito
-- **测试覆盖**: 目标 ≥ 80%
-
-### 监控与可观测性
-- **指标**: Micrometer + Prometheus
-- **日志**: SLF4J + Logback
-- **分布式追踪**: 可选（Phase 2+）
-
-### API 文档
-- **OpenAPI 3.0**: Springdoc-OpenAPI 2.x
-- **UI**: Swagger UI（自动包含）
-
-### 构建与包管理
-- **构建工具**: Maven 3.8+
-- **仓库管理**: Maven Central
-- **Java 版本**: 编译器 `source`/`target` = 17
-
-## 模块化设计
-
-```
-lakehouse-flow/                          # 根项目 (pom.xml parent)
-├── lakehouse-flow-common/               # 通用工具、常量、异常
-│   ├── src/main/java/io/github/lakehouseflow/common/
-│   │   ├── constant/                    # 常量（状态枚举、错误码）
-│   │   ├── exception/                   # 自定义异常
-│   │   ├── util/                        # 工具类
-│   │   └── model/                       # 公共模型（请求/响应包装）
-│   └── pom.xml
-│
-├── lakehouse-flow-model/                # 领域模型（Entity、DTO、VO）
-│   ├── src/main/java/io/github/lakehouseflow/model/
-│   │   ├── entity/                      # JPA Entity（数据库 PO）
-│   │   ├── dto/                         # Data Transfer Object
-│   │   ├── vo/                          # Value Object
-│   │   └── enums/                       # 枚举（状态机、类型）
-│   └── pom.xml
-│
-├── lakehouse-flow-dao/                  # 数据访问层 + 数据库迁移
-│   ├── src/main/java/io/github/lakehouseflow/dao/
-│   │   └── repository/                  # Spring Data JPA Repository
-│   ├── src/main/resources/db/migration/ # Flyway 迁移脚本
-│   └── pom.xml
-│
-├── lakehouse-flow-service/              # 业务服务层
-│   ├── src/main/java/io/github/lakehouseflow/service/
-│   │   ├── asset/                       # 资产状态服务
-│   │   ├── event/                       # 事件处理服务
-│   │   ├── dependency/                  # 依赖解析服务
-│   │   ├── workflow/                    # 工作流服务
-│   │   ├── task/                        # 任务服务
-│   │   └── executor/                    # 执行适配器
-│   └── pom.xml
-│
-├── lakehouse-flow-api/                  # REST API 控制器层
-│   ├── src/main/java/io/github/lakehouseflow/api/
-│   │   ├── controller/                  # @RestController
-│   │   └── interceptor/                 # 请求拦截器
-│   └── pom.xml
-│
-├── lakehouse-flow-scheduler/            # 调度循环与后台任务
-│   ├── src/main/java/io/github/lakehouseflow/scheduler/
-│   │   ├── loop/                        # 各个调度循环实现
-│   │   ├── monitor/                     # 监控和补偿
-│   │   └── lease/                       # 分布式锁（可选）
-│   └── pom.xml
-│
-├── lakehouse-flow-integration/          # Paimon/Iceberg/Hudi 集成
-│   ├── src/main/java/io/github/lakehouseflow/integration/
-│   │   ├── paimon/                      # Paimon 事件源适配器
-│   │   ├── iceberg/                     # Iceberg（Phase 3）
-│   │   └── hudi/                        # Hudi（Phase 3）
-│   └── pom.xml
-│
-├── lakehouse-flow-test/                 # 共享测试工具与 Fixture
-│   ├── src/main/java/io/github/lakehouseflow/test/
-│   │   ├── container/                   # Testcontainers 配置
-│   │   ├── fixture/                     # 测试数据生成器
-│   │   └── assertion/                   # 自定义断言
-│   └── pom.xml
-│
-├── lakehouse-flow-boot/                 # Spring Boot 启动类与配置
-│   ├── src/main/java/io/github/lakehouseflow/
-│   │   ├── LakehouseFlowApplication.java # 主启动类
-│   │   └── config/                      # Spring 配置
-│   ├── src/main/resources/
-│   │   ├── application.yml              # 主配置
-│   │   ├── application-dev.yml          # 开发环境
-│   │   └── application-prod.yml         # 生产环境
-│   └── pom.xml
-│
-└── pom.xml                              # 根 POM（parent、dependencyManagement）
+平台 START/RESTART -> JobControlIntent -> 被动式执行面接收
+                    -> writer epoch 业务 snapshot -> 世代证据
 ```
 
-## 依赖版本管理
+仓库不包含 executor、Worker、资源队列、外部作业状态轮询或结果回调。Workflow/Task 状态只表达调度、投递和 snapshot 确认阶段。
 
-根 POM 定义所有版本，子模块继承：
+## 运行与构建
 
-```xml
-<dependencyManagement>
-    <dependencies>
-        <!-- Spring Boot 3.2.x -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-dependencies</artifactId>
-            <version>3.2.0</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-        
-        <!-- PostgreSQL Driver -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <version>42.7.0</version>
-        </dependency>
-        
-        <!-- Flyway -->
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-            <version>9.22.0</version>
-        </dependency>
-        
-        <!-- Test -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-bom</artifactId>
-            <version>1.19.0</version>
-            <type>pom</type>
-            <scope>import</scope>
-        </dependency>
-    </dependencies>
-</dependencyManagement>
-```
+| 类别 | 当前技术 | 当前约束 |
+|---|---|---|
+| 语言 | Java 17 | 编译 source/target 均为 17 |
+| 构建 | Maven Wrapper 3.9.9 | 所有本地和 CI 命令使用 `./mvnw` |
+| 应用框架 | Spring Boot 3.2.0 | Boot 模块生成可执行 JAR |
+| Web API | Spring MVC + Bean Validation | API 面向管理与审计，不提供下游抢任务接口 |
+| API 文档 | Springdoc OpenAPI 2.0.2 | 默认暴露 Swagger UI |
+| JSON | Jackson 2.15.2 | 用于 API、策略、审计和 instruction payload |
 
-## 编码规范
+代码已使用 Java 17 record、switch expression、text block 和 Stream `toList()`。不以未来可能采用的语言特性作为当前完成能力。
 
-### Java 17 特性使用
-- ✅ **Records** for immutable data transfer objects
-  ```java
-  public record AssetStateDto(String assetKey, long snapshotId, String watermark) {}
-  ```
-  
-- ✅ **Sealed Classes** for state machines
-  ```java
-  public sealed interface TaskState permits Created, Running, Success, Failed {}
-  ```
-  
-- ✅ **Text Blocks** for SQL/JSON
-  ```java
-  String sql = """
-      SELECT * FROM asset_state 
-      WHERE asset_key = ? AND snapshot_id > ?
-      """;
-  ```
-  
-- ✅ **Pattern Matching** in conditions (when stable)
+## 数据与事务
 
-### 包命名约定
-- `io.github.lakehouseflow.*` 为根包
-- 按功能域分层：`service`, `dao`, `controller`, `model`, `common`
+| 类别 | 当前技术 | 当前状态 |
+|---|---|---|
+| 主数据库 | PostgreSQL 15 本地基线 | JSONB、唯一约束、行锁和事务是正确性的一部分 |
+| ORM | Spring Data JPA / Hibernate | Entity 与 Repository 持久化 |
+| Schema 迁移 | Flyway 9.22.0 | 当前迁移范围为 V1.0 至 V20.0 |
+| 本地测试数据库 | H2 | 仅用于 Boot 上下文等测试，不替代 PostgreSQL 语义验收 |
 
-### 类命名规范
-- Service 类：`*Service`（接口 + Impl）
-- Repository：继承 `JpaRepository<Entity, ID>`
-- Controller：`*Controller`
-- Entity：`*PO`（Persistent Object）
-- DTO：`*Dto`
-- 枚举：`*Status`, `*Type`, `*State`
+事件落库、资产状态投影、FlowPlan 评估和 source offset 推进位于同一摄入事务。目标日期互斥使用 PostgreSQL 持久化槽位；真实多 scheduler 锁竞争仍待整体 Testcontainers E2E。
 
-## 阶段性技术重点
+当前没有 Redis 依赖，也没有把缓存放入正确性链路。
 
-### Phase 1 (MVP, 6 周)
-- ✅ 基础数据模型和 JPA 映射
-- ✅ Paimon 轮询事件源
-- ✅ 资产状态更新（乐观锁）
-- ✅ 依赖条件评估
-- ✅ 简单 REST API
-- ✅ 基础日志和监控
+## 湖格式集成
 
-### Phase 2 (多资产依赖, 6 周)
-- Push 事件接收（Webhook）
-- 复杂依赖表达式（AND/OR/NOT）
-- 补偿和失败恢复
-- 高级 API（手工触发、回溯等）
-- Redis 缓存（可选）
+调度核心只消费格式无关的 `LakehouseSnapshotSourceProvider`、`LakehouseSnapshotSource`、`LakehouseSourceIdentity` 和 `LakehouseSnapshot`。
 
-### Phase 3 (生产就绪, 8+ 周)
-- Iceberg/Hudi 支持
-- 多实例分布式协调
-- 高级监控和告警
-- 完整的 UI
-- GraalVM Native Image
+| 格式 | 当前状态 |
+|---|---|
+| Apache Paimon 1.3.1 | 已实现 Catalog API source、properties、delta manifest 分区推导和 retention gap 失败关闭；真实 writer-side 属性注入与整体 E2E 未完成 |
+| Apache Flink | 当前未引入依赖；`LF-1.0` 固定使用 Flink CDC 持续流式写入 ODS，并增加同时支持流式 checkpoint 与批式 job-end 的 Flink/Paimon writer-side adapter |
+| Apache Iceberg | 未实现 adapter |
+| Apache Hudi | 未实现 adapter |
 
-## 性能目标 (Phase 1)
+原生 snapshot/instant 标识、operation 和分区差异只能在 integration adapter 内解释。公共调度代码使用适配器提供的单调坐标和 typed `dataChange`，不能写死 Paimon 语义。
 
-| 指标 | 目标 | 补注 |
-|------|------|------|
-| 事件入库延迟 | < 100ms | P99 |
-| 资产状态更新 | < 50ms | 单次 |
-| 依赖评估 | < 100ms | 平均 |
-| 触发创建 E2E | < 1s | P95 |
-| 轮询扫描周期 | 10s | 可配置 |
+`LF-1.0` 的 Flink 集成还必须遵守单表单写入者：规范化 `tableAssetKey` 只能绑定一个稳定 `writerJobKey`，同一作业的启动、重启和流批模式切换使用单调 writer epoch。Lakehouse Flow 只保存 binding、epoch 和独立 `JobControlIntent`，真实 Flink 操作及旧 epoch fencing 由平台执行面完成；现有绑定 `TaskInstance` 的 `SchedulingIntent` 继续只表达数据处理范围。
 
-## 安全考虑
+Flink 是 `LF-1.0` 的参考执行与 Paimon 写入实现，不是 Flow 领域类型。`ScheduleNode`、`WriterJobBinding` 和通用 outbound intent 只出现 `STREAMING|BATCH`；实际引擎、作业包、入口和提交钩子由 `writerJobKey` 对应的平台执行适配器解析。后续接入 Spark 或其他引擎不得修改 DAG、action、snapshot 结果或通用 intent schema。
 
-- ✅ 参数化查询（Hibernate + JPA）
-- ✅ 敏感信息加密（密码、token）
-- ✅ API 认证与授权（Spring Security，Phase 2+）
-- ✅ 审计日志（所有状态变更记录）
-- ✅ 输入验证（@Valid + @Validated）
+[Apache Paimon 1.3 兼容矩阵](https://paimon.apache.org/docs/1.3/ecosystem/overview/) 列出了 Flink 1.15-1.20 的读写支持，其 [Flink API 文档](https://paimon.apache.org/docs/1.3/program-api/flink-api/) 要求 Paimon connector artifact 与 Flink minor version 匹配。开始 Flink adapter 前先用 Flink CDC 流式 ODS、流式 checkpoint 写入和批式 job-end 写入三个最小探针锁定一组确切版本，再固化到根 POM 和 E2E；未验证前不在文档中假定具体 Flink minor 版本。
 
-## 部署模式
+## 调度意图交付
 
-### 开发
+每条不可变 outbound intent 只选择一个 route。当前 `SchedulingIntent` 已实现以下通道；G20 的 `JobControlIntent` 将保留独立领域记录和 delivery 外键，但复用同一 publisher SPI、claim/fencing/退避/死信算法：
+
+| 通道 | 当前实现 |
+|---|---|
+| `DATABASE_TABLE` | intent 与 delivery 同事务持久化，下游轮询专用表 |
+| `HTTP` | Java 17 `HttpClient` 主动 POST，2xx 只表示传输 ACK |
+| `MQ` | broker-neutral `SchedulingIntentMessageGateway`，具体 Kafka/Pulsar/RabbitMQ 绑定未提供 |
+
+外部投递具备 claim lease、fencing token、指数退避、最大尝试和死信审计。传输状态不表示下游执行状态，也不能确认 DAG。
+
+## 可观测性
+
+- Spring Boot Actuator 暴露 health、metrics 和 Prometheus。
+- Micrometer 记录 snapshot source、source reconciliation、调度决策、intent delivery 和调度积压指标。
+- SLF4J + Logback 输出调度证据和异常。
+- 当前没有分布式 tracing 实现。
+- 指标与日志用于排障，不替代持久化 snapshot 证据。
+
+## 测试与质量门槛
+
+| 类别 | 当前技术或门槛 |
+|---|---|
+| 单元测试 | JUnit 5 + Mockito |
+| Service 测试约束 | 每个显式 public service 方法必须有直接测试入口 |
+| 覆盖率 | JaCoCo service line >= 90%，branch >= 65% |
+| 系统级 E2E | Testcontainers 依赖已预留；整体 E2E 尚未实现，现为 `LF-1.0` 发布门槛 |
+| CI | GitHub Actions 使用 JDK 17 执行 `./mvnw -B -ntp clean verify` |
+| 交付物 | 验证成功后构建并检查可执行 Spring Boot JAR |
+
+当前验证快照和测试数量只记录在 `PHASE2_PROGRESS.md`，避免在多个文档中复制后失真。
+
+## 模块职责
+
+| 模块 | 职责 |
+|---|---|
+| `lakehouse-flow-common` | 公共常量、异常和工具 |
+| `lakehouse-flow-model` | 调度、snapshot、action、backfill 和 delivery 持久化模型 |
+| `lakehouse-flow-dao` | Spring Data Repository 与 Flyway migration |
+| `lakehouse-flow-service` | 资产状态、FlowPlan、DAG、action、snapshot 证据与策略服务 |
+| `lakehouse-flow-api` | FlowPlan/Node、action、实例和审计 REST API |
+| `lakehouse-flow-scheduler` | intent outbox、外部投递、snapshot 确认和指标扫描 |
+| `lakehouse-flow-integration` | 湖格式 source SPI、Paimon adapter 和 source 对账 |
+| `lakehouse-flow-test` | `LF-1.0` 整体 Testcontainers E2E 的共享装配入口 |
+| `lakehouse-flow-boot` | Spring Boot 启动、运行配置和可执行 JAR |
+
+模块边界不包含执行器适配层。
+
+## 安全现状
+
+- 写入型 API 使用 Bean Validation 做基础请求校验。
+- `FlowPlan.owner` 和 `flowSpaceCode` 目前是归属与隔离字段，不构成可信授权。
+- Spring Security、可信身份、Flow 级 RBAC 和配额尚未实现。
+- 仓库中的 PostgreSQL 用户名和密码仅用于本地开发；生产凭据必须由部署环境注入。
+- 当前不能声称已实现敏感信息加密、TLS 终止或生产网络隔离。
+
+## 当前非目标与未验证项
+
+- 不实现 executor、任务运行状态回调或资源调度。
+- 不承诺 Redis、Kafka、Pulsar、RabbitMQ、Kubernetes、GraalVM 或 tracing 集成。
+- 不声明尚未测量的吞吐、延迟或容量 SLA。
+- 不把 H2 测试或 Mockito 测试描述成真实 PostgreSQL/Paimon E2E。
+- `LF-1.0` 必须完成 Flink/Paimon、DB/HTTP 和多 scheduler PostgreSQL 整体 Testcontainers E2E。
+- Iceberg/Hudi、具体 MQ 产品绑定、可信身份/RBAC 和运维 UI 后移至 1.1+。
+- 容量基线只在真实生产负载下采集，当前不声称未经测量的 SLA。
+
+## 常用命令
+
 ```bash
-mvn clean install
-java -jar lakehouse-flow-boot/target/lakehouse-flow-boot-*.jar
+./mvnw -version
+./mvnw clean verify
+docker compose up -d postgres
+cd lakehouse-flow-boot
+../mvnw spring-boot:run
 ```
 
-### Docker
-```dockerfile
-FROM eclipse-temurin:17-jre
-COPY lakehouse-flow-boot/target/lakehouse-flow-boot-*.jar /app/lakehouse-flow.jar
-ENTRYPOINT ["java", "-jar", "/app/lakehouse-flow.jar"]
-```
-
-### Kubernetes
-- 标准 Spring Boot + Actuator 健康检查
-- 水平扩展（无状态 API，DB 作为中心）
-- ConfigMap 配置注入
-
-## 参考资源
-
-- [Spring Boot 3.2 文档](https://spring.io/projects/spring-boot)
-- [Spring Data JPA 文档](https://spring.io/projects/spring-data-jpa)
-- [Testcontainers](https://www.testcontainers.org/)
-- [Micrometer 文档](https://micrometer.io/)
-- [Java 17 新特性](https://www.oracle.com/java/technologies/javase/17-relnotes.html)
+更多启动步骤见 `QUICKSTART.md`，开发约束见 `DEVELOPMENT.md`。

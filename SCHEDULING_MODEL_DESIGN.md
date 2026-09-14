@@ -2,7 +2,7 @@
 
 ## 目标和边界
 
-本文是 Lakehouse Flow 后续对象模型的设计草案，先用于讨论，不代表已经进入开发实现。
+本文是 Lakehouse Flow 当前对象模型与调度语义的权威设计基线。实现进度、版本目标和未完成项以 `PHASE2_PROGRESS.md` 为准；本文中的模型约束不是执行器设计，也不能被下游任务状态回调替代。
 
 Lakehouse Flow 的核心目标不是做一个新的 DolphinScheduler、Airflow 或任务执行平台，而是做一个面向湖仓 snapshot 推进的调度决策系统：
 
@@ -57,6 +57,13 @@ Lakehouse Flow 参考的 action 只有这些：
 | Batch Delete / Batch Export / Batch Copy | 批量归档、导出、复制定义 |
 | Version Info / Switch Version | 查看、发布、回滚 `FlowPlanVersion` |
 | Tree Diagram / Gantt / Log | 转译为拓扑图、调度证据时间线、blocked reason、snapshot 确认时间线 |
+
+除上述调度 action 外，平台还需要两个作业生命周期操作：
+
+| 平台操作 | Lakehouse Flow 语义 |
+| --- | --- |
+| `START_JOB` | 为 `WriterJobBinding` 分配新的 writer epoch 并发布独立 `JobControlIntent`；执行面实际启动对应引擎作业，首个可归因数据 snapshot 才能确认数据推进 |
+| `RESTART_JOB` | 原子推进 writer epoch，发布独立 `JobControlIntent` 并要求执行面 fencing 旧 epoch；不读取引擎 JobStatus |
 
 明确不参考的部分：
 
@@ -261,13 +268,62 @@ Lakehouse Flow 参考的 action 只有这些：
 - `nodeType`: `ASSET_OUTPUT` / `CHECKPOINT` / `SUB_FLOW`
 - `dependsOnNodes`
 - `inputDependencySpec`
+- `writerJobKey`
+- `processingMode`: `STREAMING` / `BATCH`
 - `outputAssetSpec`
 - `confirmationPolicy`
 
 注意：
 
 - `ScheduleNode` 不配置 Shell、Spark、SQL 这类执行器。
-- 如果后续需要对接外部执行系统，只保存外部系统的路由信息或调度意图 payload，不保存执行状态。
+- `ScheduleNode` 只通过 `processingMode=STREAMING|BATCH` 表达调度所需差异，不保存 `engineType=FLINK|SPARK|...`。
+- `writerJobKey` 是平台作业的透明引用。实际执行引擎、程序包、入口类和运行参数由平台执行面解析，不进入 FlowPlan。
+
+#### WriterJobBinding
+
+`WriterJobBinding` 表示平台中唯一允许写入某张物理湖表的稳定作业身份，而不是某个执行引擎的一次运行实例。它是跨 Flow 共享的平台级对象，FlowPlan/Node 只能引用 binding，不能在自己的隔离范围内重新声明一个同表 writer。
+
+建议字段：
+
+- `writerJobKey`: 平台内稳定且全局唯一的作业键
+- `tableAssetKey`: 去除 `${bizDate}` 和具体分区后的规范化物理表键
+- `allowedProcessingModes`: 同一套作业代码允许的 `STREAMING` / `BATCH` 运行配置
+- `deliveryRoute`: 平台执行面的被动接收路由
+- `currentWriterEpoch`: 每次启动、重启或安全模式切换时单调递增
+- `activeProcessingMode`: 当前 epoch 唯一允许的写入模式
+- `holderIntentKey`, `leaseExpiresAt`: 防止同一 writer 的不同运行实例并发占用物理表
+- `createdAt`, `updatedAt`
+
+发布不变量：
+
+1. 一个 FlowPlan DAG 可以同时存在流式和批式节点。
+2. 一个 `tableAssetKey` 只能绑定一个 `writerJobKey`；跨 FlowPlan 和跨版本校验都不能只看节点 ID 或分区日期。
+3. 同一个 writer 可以复用流批一体代码，但同一 epoch 只能激活一种写入模式，不能让流式实例和批式实例同时写表。
+4. 已发布版本升级可以继续引用原 `writerJobKey`；把目标表换绑到另一个 writer 必须经过显式迁移，不允许普通发布悄悄覆盖。
+5. Lakehouse Flow 保存 binding、epoch 和控制意图，不保存 `RUNNING/FAILED/CANCELLED` 等引擎状态。
+
+绑定 task 的批式 `SchedulingIntent` 本身授权执行面启动一次有界作业，并占用一个 writer epoch。连续 writer 的补数可以由现有流作业消费回放意图；如果必须切到批式 profile，则平台必须先 fencing 流式 epoch，再用同一个 `writerJobKey` 启动批式 epoch，完成后再分配新 epoch 恢复流式运行。任何情况下都不能出现第二个 writer 作业并发写同表。
+
+#### JobControlIntent
+
+`JobControlIntent` 表示从平台发起的一次常驻作业启动或重启操作。它与数据处理 `SchedulingIntent` 是两个领域对象：前者绑定 `WriterJobBinding`，后者绑定 `TaskInstance`。二者共享可靠投递语义，但不能为了复用现有表而让作业控制伪造 workflow、task 或业务日期。
+
+建议字段：
+
+- `controlIntentKey`: 稳定幂等键，建议由 `writerJobKey + writerEpoch` 生成
+- `writerJobKey`, `tableAssetKey`
+- `operationType`: `START_JOB` / `RESTART_JOB`
+- `writerEpoch`, `previousWriterEpoch`
+- `processingMode`: 常驻作业当前只允许 `STREAMING`；有界批运行由数据处理 intent 授权
+- `baselineSnapshotId`, `confirmationTimeout`: 用于观察新 epoch 是否产生目标业务数据
+- `deliverBefore`, `requestedBy`, `reason`, `createdAt`
+- `instructionPayloadJson`: 独立版本化控制契约，不包含 task/workflow/bizDate/input vector
+
+`JobControlIntentDelivery` 复用现有 claim lease、fencing token、指数退避、最大尝试和死信算法，但保留到控制意图的明确外键。当前 `SchedulingIntent` 已由 `task_instance_id NOT NULL` 和 task 唯一约束定义为数据处理意图，G20 不应把它改造成带大量可空字段的多态对象。
+
+控制意图的 delivery ACK 只说明操作已送达。首个匹配 `jobControlIntentKey + writerJobKey + writerEpoch` 的目标业务 snapshot 可以确认该 writer 世代产生了数据；没有业务数据变化时不得制造 snapshot，也不能把 `SNAPSHOT_NOT_ADVANCED` 解释为执行引擎作业启动失败。
+
+平台最小操作入口应包括 `POST /api/v1/writer-jobs/{writerJobKey}/start`、`POST /api/v1/writer-jobs/{writerJobKey}/restart` 和控制意图审计查询。start/restart 请求只创建并可靠投递 `JobControlIntent`；API 返回控制意图与投递证据，不同步等待执行引擎，也不返回伪造的 RUNNING/SUCCESS 状态。
 
 #### DependencySpec
 
@@ -308,6 +364,32 @@ Lakehouse Flow 参考的 action 只有这些：
 - `QUALITY_PASSED`
 - `SCHEMA_COMPATIBLE`
 
+#### ProcessingMode
+
+定义节点是流式还是批式。Flow 不关心实际使用 Flink、Spark 或其他计算引擎，也不持有任何执行状态。
+
+建议字段：
+
+- `processingMode`: `STREAMING` / `BATCH`，这是 Flow 层唯一的计算方式分类
+
+`STREAMING` 节点的作业由平台启动后自行持续消费上游新增 snapshot/changelog，不为每次普通输入推进创建 task intent；其输出业务 snapshot 作为下游依赖事实。`BATCH` 节点在全部依赖满足后生成一次数据处理 `SchedulingIntent`，平台执行面据此运行有界范围。流式和批式的提交钩子差异由执行适配器处理，不在 FlowPlan 中保存 `activationMode`、`completionBoundary` 或引擎枚举。
+
+`inputSnapshotVector` 是运行时 SchedulingIntent 的冻结证据，不是节点定义字段。对 `STREAMING` 节点执行补数或重跑时，Action 仍派生一次有明确输入向量的数据处理回放意图，而不是把常驻作业状态带进调度模型。回放可由当前流式 writer 消费，或按单写入者规则受控切换到批式运行，并只用新的可归因目标 snapshot 推进原有 BackfillBatch/DAG。
+
+常驻作业的首次启动和重启由平台操作触发：Lakehouse Flow 为对应 `writerJobKey` 分配 writer epoch 并投递独立 `JobControlIntent(START_JOB|RESTART_JOB)`，平台执行面根据 writer 路由完成真实引擎操作。该控制对象不进入 Flow DAG，也不创建 task instance；旧 epoch 产生的迟到 snapshot 可以保留为物理事实，但不能确认新 epoch 的控制意图或数据处理 intent。
+
+#### MixedDependencyEvidence
+
+混合流批 DAG 的边统一依赖“父节点输出资产证据”，但证据来源不同：
+
+- 父节点为 `STREAMING`：记录触发本次判断的父输出 `assetKey + snapshotId/watermark`，不要求存在逐 snapshot `TaskInstance`。
+- 父节点为 `BATCH`：记录同一 ScheduleInstance 内父 task 已确认的 `taskInstanceId + targetAssetKey + observedSnapshotId`。
+- 节点自身 `inputDependencySpec`：继续记录额外资产条件对应的 snapshot/watermark 证据。
+
+建议统一冻结为 `InputSnapshotEvidence`：`parentNodeCode`、`parentProcessingMode`、`assetKey`、`snapshotId`、`watermark`、可选 `upstreamTaskInstanceId` 和 `observedAt`。下游批式节点只有在全部直接父边和自身额外依赖都满足后才创建 SchedulingIntent；下游流式节点自行持续消费这些输入，Lakehouse Flow 不为每次父 snapshot 创建 task intent。
+
+当前 `DagProgressionService.dependenciesConfirmed` 只接受“同一 workflow 的父 task 已确认”，这是纯批式/意图驱动 DAG 的已有实现，不是混合流批 DAG 的最终语义。G19 需要用上述证据向量替代纯 task 状态门禁，同时保留批式父节点的同实例隔离。
+
 #### OutputAssetSpec
 
 定义调度后应该观察哪个目标资产的 snapshot 变化。
@@ -317,7 +399,7 @@ Lakehouse Flow 参考的 action 只有这些：
 - `targetAssetKey`
 - `baselinePolicy`: `READ_BEFORE_SCHEDULE`
 - `confirmationType`: `INTENT_CORRELATED_SNAPSHOT_ADVANCED`
-- `requiredSnapshotProperties`: intent/source/target/bizDate/final 属性约定
+- `requiredSnapshotProperties`: intent/source/target/bizDate/final 属性约定，其中 final 表示逻辑 intent 完成而不是引擎作业结束
 - `requiredSnapshotChangeType`: 当前固定为格式无关的 `DATA`；原生 operation 由 source adapter 映射
 - `expectedPartition`: 分区目标的实际变更范围
 - `timeout`: ISO-8601 Duration；节点策略覆盖版本策略，旧字段名 `confirmationTimeout` 只作兼容读取
@@ -357,7 +439,7 @@ Lakehouse Flow 参考的 action 只有这些：
 - `maxActiveInstances`
 - `targetAdmissionLease`: ISO-8601 Duration，不得短于当前节点有效确认窗口；缺省时等于确认窗口
 
-`SERIAL_DISCARD`、`SERIAL_PRIORITY`、`priority` 和 `dedupeWindow` 需要先定义丢弃/排队的审计模型，当前发布校验会拒绝未实现的 mode，避免配置被静默忽略。版本活跃数只统计调度状态为 `SCHEDULED` 的 workflow；同一 workflow 的多个 root 和后续 DAG 节点不重复占用名额，最终名额仍由 snapshot 确认或确认超时释放。
+`SERIAL_DISCARD`、`SERIAL_PRIORITY`、`priority` 和 `dedupeWindow` 需要先定义丢弃/排队的审计模型，当前发布校验会拒绝未实现的 mode，避免配置被静默忽略。版本活跃数只统计调度状态为 `SCHEDULED` 的 workflow；同一 workflow 的多个 root 和后续 DAG 节点不重复占用名额，最终名额由确定的 snapshot 终态释放。source 阻塞不能伪造超时失败来提前释放名额。
 
 ### 4. 调度运行时与审计
 
@@ -399,7 +481,17 @@ EXPIRED
 - `SCHEDULED` 表示调度意图已经发出或记录成功。
 - `CONFIRMING_SNAPSHOT` 表示等待目标资产 snapshot 推进。
 - `SNAPSHOT_CONFIRMED` 表示找到了相对 baseline 推进且与 intent 精确匹配的目标资产 snapshot。
-- `SNAPSHOT_NOT_ADVANCED` 表示在确认窗口内没有观察到可归属的推进；期间可能存在其他来源的 snapshot。
+- `SNAPSHOT_NOT_ADVANCED` 表示确认窗口已结束、source 证据链完整且没有观察到可归属的推进；期间可能存在其他来源的 snapshot。source 不可用、未追平或存在 retention/projection 缺口时不得进入该状态。
+
+`LF-1.0` 不将传输和 source 健康塞入节点状态机，而是同时暴露三个正交维度：
+
+```text
+snapshotResult = WAITING | SNAPSHOT_CONFIRMED | SNAPSHOT_NOT_ADVANCED
+deliveryStatus = PENDING | PUBLISHING | RETRY_WAIT | PUBLISHED | DELIVERY_EXHAUSTED
+sourceHealth   = HEALTHY | REPAIRABLE | SOURCE_BLOCKED
+```
+
+`DELIVERY_EXHAUSTED` 和 `SOURCE_BLOCKED` 都是运维与决策证据，不是下游执行失败。在 `SOURCE_BLOCKED` 期间 snapshot 结果保持待定，恢复且证据连续后才重新判定确认或未推进。
 
 #### NodeScheduleInstance
 
@@ -740,7 +832,7 @@ flow_plan_id + version + backfill_batch_id + biz_time + node_scope
 - 已新增 `SchedulingActionService.backfillScheduleNode`，支持按 published `FlowPlanVersion`、起始 `ScheduleNode`、业务日期闭区间和 `NO_CASCADE` / `DIRECT_DOWNSTREAM` / `TRANSITIVE_DOWNSTREAM` 生成 task scheduling intents。
 - 当前 node 补数会为每个业务日期创建 action-owned workflow wrapper；仅选中起点为 READY，范围内其他节点先等待 DAG snapshot 依赖。
 - 当前 node 补数已持久化 `BackfillBatch` 和 `BackfillItem`，可按 actionKey 查询批次，并按 batchId 查询 node/date 明细。
-- 已新增 `DagProgressionService`：父节点目标 snapshot 确认后重算下游，严格要求全部直接父节点确认；缺失或未推进父节点均阻塞。
+- 已新增 `DagProgressionService`：当前针对拥有 task instance 的父节点，在目标 snapshot 确认后重算下游，并对缺失或未推进父 task 保持阻塞；流式父节点的资产证据门禁尚待 G19 补齐。
 - 已新增 `SnapshotTriggerRoutingService`：补数、恢复和重跑产生的 snapshot 只确认所属 intent 并推进所属 workflow，不再进入全局自然触发通道。
 - 一个物理表 snapshot 会同时投影表级状态和 `changedPartitions` 对应的分区级状态；历史分区补数不能推进当前日期的分区资产键。
 - Lakehouse Flow 标记但不存在 intent、属性不完整、中间提交和维护提交均失败关闭，不产生正常调度实例。
@@ -757,13 +849,13 @@ flow_plan_id + version + backfill_batch_id + biz_time + node_scope
 - 完整 Flow 与 Node 子图恢复都继承源批次冻结的 scope、入口节点和选中节点，不复用旧实例 DAG 确认。
 - 当前补数还未支持审批上限，该能力按当前阶段决策暂缓。
 - 已新增跨正常、补数、恢复和重跑的 `targetAssetKey + bizDate` 持久化准入槽；未获槽位的任务保持 `READY_TO_SCHEDULE`，由后续内部扫描重试。
-- 准入槽在 baseline 捕获前获取，在匹配 snapshot 确认或确认窗口超时后释放；过期重占只代表允许再次发布，不保证旧下游进程已经停止。
+- 准入槽在 baseline 捕获前获取，在匹配 snapshot 确认或发布租约过期后释放；过期重占只代表允许再次发布，不保证旧下游进程已经停止，也不等于旧 task 已得出 `SNAPSHOT_NOT_ADVANCED`。source 阻塞时可允许调度槽位过期，但旧 task 的 snapshot 结果仍待定。
 - 准入槽释放校验当前 holder，旧 intent 的晚到 snapshot 不能释放已经换给新 intent 的槽位。外部系统自行启动且未经过 Lakehouse Flow 的任务不受该调度互斥控制，但其未归因 snapshot 不能确认 Lakehouse Flow intent。
 - `FlowPlanVersion.confirmationPolicyJson` 与 `concurrencyPolicyJson` 已进入 intent 发布、确认窗口、目标准入租约和版本级活跃实例准入决策。
 
 ### 暂停、取消和恢复
 
-Lakehouse Flow 的暂停/取消只作用于调度层。
+Lakehouse Flow 的暂停/取消只作用于调度层；作业启动和重启是独立的平台生命周期操作。
 
 | 操作 | 语义 |
 | --- | --- |
@@ -776,10 +868,11 @@ Lakehouse Flow 的暂停/取消只作用于调度层。
 | `CANCEL_BACKFILL` | 取消尚未交付的 intent，保留已交付 intent 及其 snapshot 确认链路 |
 | `RECOVER_BACKFILL` | 保留失败批次，从最早未推进日期创建新的替代批次和调度意图 |
 
-不做的事：
+边界：
 
-- 不 kill worker。
-- 不停止 Spark/Flink/Yarn/K8s job。
+- Lakehouse Flow 进程不直接 kill worker，也不直接调用 Spark/Flink/Yarn/K8s 控制接口。
+- 平台 `START_JOB` / `RESTART_JOB` 只产生不绑定 task 的可靠 `JobControlIntent`，真实操作由执行面完成。
+- 普通 `PAUSE/CANCEL` 不隐式停止外部作业；任何停止能力都必须是独立、显式且可审计的生命周期操作。
 - 不清理外部执行日志。
 
 当前代码进展：
@@ -847,7 +940,8 @@ Lakehouse Flow 的暂停/取消只作用于调度层。
 3. `AssetState` 第一版按 `assetId` 隔离，还是按 `physicalAssetRefId` 共享事实再做逻辑投影？
 4. 重跑默认使用原证据还是重新采样当前 `AssetState`？
 5. `TRANSITIVE_DOWNSTREAM` 在生产环境是否强制审批，以及按多少节点/日期触发阈值？
-6. Lakehouse Flow 发出的调度意图最终落到哪里：API、消息队列、数据库命令表，还是仅内部记录？
+
+已确认：`LF-1.0` 的数据处理 intent 和 `JobControlIntent` 都必须支持 Database Table 与 HTTP 两种正式交付方式；单条意图仍只选择一个实际路由。
 
 ## 建议的下一步文档工作
 

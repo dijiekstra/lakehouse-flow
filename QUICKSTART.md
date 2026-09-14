@@ -1,284 +1,169 @@
-# Lakehouse Flow - 快速启动指南
+# Lakehouse Flow 快速启动
 
-> 历史文档：命令可供参考，但能力清单可能已过期；当前启动与测试方式以 `README.md` 和 `DEVELOPMENT.md` 为准。
+**最后核对**: 2026-09-13
 
-本指南介绍如何快速启动和验证 Lakehouse Flow 项目的骨架环境。
+本指南用于启动当前 Lakehouse Flow 应用和验证本地构建。系统只生成调度意图并通过目标资产 snapshot 确认结果，不会在本地替你执行下游任务。
 
 ## 前置要求
 
-- **Java 17 LTS**: 已在系统中安装
-- **Maven 3.8.x+**: 用于构建项目
-- **Docker & Docker Compose**: 用于运行 PostgreSQL 容器
-- **Git**: 版本控制（可选）
+- JDK 17
+- Docker 与 Docker Compose
+- 可访问 Maven Central 的网络
 
-检查环境：
-
-```bash
-java -version          # 应该显示 Java 17+
-mvn -version           # 应该显示 Maven 3.8.x+
-docker --version       # 应该显示 Docker 版本
-docker-compose --version  # 应该显示 Docker Compose 版本
-```
-
-## 快速启动步骤
-
-### 1. 启动 PostgreSQL 容器
+项目自带 Maven Wrapper，不依赖系统 `mvn`：
 
 ```bash
-# 进入项目根目录
-cd /path/to/lakehouse-flow
-
-# 启动 PostgreSQL 和 pgAdmin
-docker-compose up -d
-
-# 验证容器是否运行
-docker ps
-
-# 查看日志（可选）
-docker-compose logs -f postgres
+source .mavenrc
+"$JAVA_HOME/bin/java" -version
+./mvnw -version
+docker --version
+docker compose version
 ```
 
-PostgreSQL 信息：
-- **Host**: `localhost:5432`
-- **Database**: `lakehouse_flow`
-- **Username**: `postgres`
-- **Password**: `postgres`
+两条版本命令都应显示 Java 17。macOS 的 `.mavenrc` 会尝试选择本机 JDK 17，Linux 和 CI 使用环境已经提供的 `JAVA_HOME`。macOS 的 `/usr/bin/java` 可能仍指向系统默认 JDK，因此直接运行 JAR 时使用 `"$JAVA_HOME/bin/java"`。
 
-pgAdmin 信息：
-- **URL**: `http://localhost:5050`
-- **Email**: `admin@lakehouse-flow.io`
-- **Password**: `admin`
-
-### 2. 编译项目
+## 1. 启动 PostgreSQL
 
 ```bash
-# 清空之前的编译结果，编译所有模块
-mvn clean compile -DskipTests
-
-# 如果需要跳过测试并打包
-mvn clean package -DskipTests
+docker compose up -d postgres
+docker compose ps
 ```
 
-输出应该显示：
-```
-[INFO] BUILD SUCCESS
+本地默认连接：
+
+```text
+URL:      jdbc:postgresql://localhost:5432/lakehouse_flow
+User:     postgres
+Password: postgres
 ```
 
-### 3. 运行单元测试
+这些凭据只用于本地开发。Compose 只创建空数据库；应用启动时，Flyway 从 classpath 按版本顺序执行 `lakehouse-flow-dao/src/main/resources/db/migration` 下的迁移。
+
+## 2. 完整验证
 
 ```bash
-# 运行所有单元测试（不需要 Docker）
-mvn test
-
-# 运行整个验证流程（包括集成测试，需要 Docker）
-mvn verify
+./mvnw clean verify
 ```
 
-### 4. 启动应用程序
+该命令会：
 
-#### 方法 A：使用 Maven 直接运行（开发环境）
+- 编译全部九个模块；
+- 运行 JUnit/Mockito 测试；
+- 检查 service line coverage >= 90%、branch coverage >= 65%；
+- 生成可执行 Spring Boot JAR。
+
+较小改动可以先运行局部测试，例如：
 
 ```bash
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+./mvnw -pl lakehouse-flow-service -am test
+```
+
+完成一项变更前仍应执行全量 `clean verify`。
+
+## 3. 启动应用
+
+```bash
 cd lakehouse-flow-boot
-mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=dev"
+../mvnw spring-boot:run
 ```
 
-#### 方法 B：启动 JAR 文件（生产环境）
+另一个终端检查：
 
 ```bash
-# 首先构建 FAT JAR
-mvn clean package -DskipTests
-
-# 运行 JAR
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-java -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar \
-  --spring.profiles.active=dev \
-  --spring.datasource.url=jdbc:postgresql://localhost:5432/lakehouse_flow
+curl --noproxy '*' http://localhost:8080/actuator/health
+curl --noproxy '*' http://localhost:8080/actuator/prometheus
 ```
 
-### 5. 验证应用程序运行
+OpenAPI：
 
-应用程序启动后，应该看到日志输出类似：
-
-```
-INFO  [main] org.springframework.boot.StartupInfoLogger - Started LakehouseFlowApplication
-INFO  [main] o.s.b.a.e.web.EndpointLinksSupplier - Exposing 3 endpoint(s) beneath base path '/actuator'
+```text
+http://localhost:8080/swagger-ui.html
+http://localhost:8080/v3/api-docs
 ```
 
-然后可以验证端点：
+默认配置下 Paimon source 关闭，避免未配置 catalog 时扫描失败。调度意图默认使用 `DATABASE_TABLE` 通道。
+
+## 4. 运行打包产物
 
 ```bash
-# 检查应用健康状态
-curl http://localhost:8080/actuator/health
-
-# 应该返回：
-# {"status":"UP"}
-
-# 获取 Swagger UI（API 文档）
-curl http://localhost:8080/swagger-ui.html
+./mvnw -pl lakehouse-flow-boot -am clean package
+source .mavenrc
+"$JAVA_HOME/bin/java" -jar lakehouse-flow-boot/target/lakehouse-flow-boot-0.1.0-SNAPSHOT.jar
 ```
 
-## 项目结构
+该 JAR 必须包含 Spring Boot `JarLauncher` 和 `BOOT-INF/lib`。默认分支 GitHub Actions 会在上传 artifact 前再次校验这些结构。
 
-```
-lakehouse-flow/
-├── pom.xml                          # 根 POM（9 个模块定义、依赖管理）
-├── docker-compose.yml               # PostgreSQL + pgAdmin 容器定义
-├── .mavenrc                         # Maven 配置（Java 17 JAVA_HOME）
-├── .gitignore                       # Git 忽略规则
-│
-├── lakehouse-flow-common/           # 共享工具模块
-│   └── src/main/java/...
-│
-├── lakehouse-flow-model/            # 域模型和实体类
-│   └── src/main/java/...
-│
-├── lakehouse-flow-dao/              # 数据库访问层（Repository、Flyway 迁移）
-│   ├── src/main/java/...
-│   ├── src/main/resources/db/migration/
-│   │   └── V1.0__init_schema.sql   # 初始化 12 个核心表
-│   └── src/test/java/...           # 集成测试基类（Testcontainers）
-│
-├── lakehouse-flow-service/          # 业务逻辑层
-│   └── src/main/java/...
-│
-├── lakehouse-flow-api/              # REST API 层（@RestController）
-│   └── src/main/java/...
-│
-├── lakehouse-flow-scheduler/        # 调度器和后台任务循环
-│   └── src/main/java/...
-│
-├── lakehouse-flow-integration/      # 湖仓事件源适配器（Paimon/Iceberg/Hudi）
-│   └── src/main/java/...
-│
-├── lakehouse-flow-test/             # 共享测试工具和固定装置
-│   └── src/main/java/...
-│
-└── lakehouse-flow-boot/             # Spring Boot 启动模块（入口点）
-    ├── src/main/java/
-    │   └── io/github/lakehouseflow/LakehouseFlowApplication.java
-    ├── src/main/resources/
-    │   ├── application.yml          # 默认配置（dev profile）
-    │   └── application-test.yml     # 测试配置
-    └── src/test/java/...
+## 5. 下游如何接收
+
+Lakehouse Flow 内部 scanner 会把 READY 调度决策固化为不可变 `SchedulingIntent`：
+
+- `DATABASE_TABLE`：下游轮询 `scheduling_intent` 专用表；
+- `HTTP`：Lakehouse Flow 主动调用配置的下游端点；
+- `MQ`：Lakehouse Flow 调用部署提供的 `SchedulingIntentMessageGateway`。
+
+REST scheduling-intent API 仅供审计，不提供 `ready/claim/deliver` 抢任务协议。下游必须按 `intentKey` 保证消费幂等，并把 payload 中的 `requiredSnapshotProperties` 写入逻辑完成业务数据 snapshot。完整规则见 `SCHEDULING_INTENT_CONTRACT.md`。
+
+## 6. 配置 Paimon Source
+
+在运行环境配置受管 catalog 和 table，并启用：
+
+```yaml
+lakehouse-flow:
+  snapshot-sources:
+    paimon:
+      enabled: true
+      zone-id: Asia/Shanghai
+      catalogs:
+        - name: paimon-prod
+          options:
+            warehouse: s3://warehouse/paimon
+            metastore: hive
+          tables:
+            - database: dwd
+              table: orders
 ```
 
-## 核心数据库表
+认证材料由部署环境提供，不应提交到仓库。当前 Paimon adapter 已实现读取逻辑，但 `LF-1.0` 要求的 Flink CDC 流式 ODS、不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)`、单表单 `writerJobKey` 绑定、writer epoch fencing、流批一体 writer-side snapshot 属性注入和系统级 E2E 尚未完成。批式路径在 `JOB_END` 提交完成证据；流式路径在 checkpoint 覆盖 intent 冻结输入向量时提交完成证据，`final` 不表示流作业结束。
 
-Flyway 初始迁移（V1.0__init_schema.sql）创建以下 12 个表：
+## 7. 常见排查
 
-1. **lakehouse_event** - 原始事件（Paimon/Iceberg/Hudi 快照）
-2. **asset_state** - 数据资产的当前状态
-3. **asset_dependency** - 资产依赖条件
-4. **workflow_definition** - 工作流定义（版本化）
-5. **task_definition** - 任务定义
-6. **workflow_instance** - 工作流执行实例
-7. **task_instance** - 任务执行实例
-8. **trigger_history** - 触发审计日志
-9. **executor_job** - 外部作业追踪
-10. **scheduler_lease** - 分布式调度器租赁
-11. **event_consumer_offset** - 事件消费进度
-12. **backfill_spec** - 补数操作配置
-
-## 常见问题排查
-
-### Q: Maven 编译时报 "无效的目标发行版: 17"
-
-**A**: 系统的默认 Java 版本不是 17。解决方法：
+### Java 版本不正确
 
 ```bash
-# 方法 1：设置 JAVA_HOME 并重新编译
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-mvn clean compile -DskipTests
-
-# 方法 2：检查 .mavenrc 是否存在
-cat .mavenrc
+source .mavenrc
+"$JAVA_HOME/bin/java" -version
+./mvnw -version
+echo "$JAVA_HOME"
 ```
 
-### Q: Docker 容器无法启动
+不要绕过 Wrapper 改用系统 Maven。
 
-**A**: 检查 Docker 守护进程是否运行：
+### 数据库未就绪
 
 ```bash
-docker ps
-# 如果显示错误，启动 Docker Desktop
-
-# 查看容器日志
-docker-compose logs postgres
+docker compose ps
+docker compose logs postgres
+docker exec lakehouse-flow-postgres psql -U postgres -d lakehouse_flow -c "SELECT 1"
 ```
 
-### Q: 应用程序启动时报数据库连接错误
-
-**A**: 确认 PostgreSQL 容器已启动且健康：
+### 需要重建本地数据库
 
 ```bash
-# 查看容器状态
-docker-compose ps
-
-# 测试数据库连接
-docker exec lakehouse-flow-postgres \
-  psql -U postgres -d lakehouse_flow -c "SELECT 1"
+docker compose down -v
+docker compose up -d postgres
 ```
 
-### Q: Flyway 迁移失败
+该命令会删除本地开发 volume，不应用于任何共享或生产数据库。
 
-**A**: 检查迁移 SQL 是否有语法错误：
+### 应用启动但没有湖仓事件
 
-```bash
-# 查看 Docker 日志
-docker-compose logs postgres
+默认 Paimon source 为关闭状态。先检查 `lakehouse-flow.snapshot-sources.paimon.enabled`、catalog/table 配置和 source reconciliation 指标。不得通过伪造 offset 或 snapshot 事件绕过缺口。
 
-# 手动运行迁移检查
-mvn flyway:info -Dflyway.url=jdbc:postgresql://localhost:5432/lakehouse_flow \
-  -Dflyway.user=postgres \
-  -Dflyway.password=postgres
-```
+## 延伸阅读
 
-## 后续步骤
-
-现在 Maven 骨架已完成，接下来的开发阶段包括：
-
-1. **Phase 1 Implementation** - 实现核心域模型（事件、资产状态、依赖）
-2. **Event Ingestion** - 构建 Paimon 快照事件源适配器
-3. **Asset State Management** - 实现资产状态机和单调性检查
-4. **Dependency Evaluation** - 实现依赖条件评估引擎
-5. **Task Dispatch** - 实现任务调度和执行器适配器
-6. **API & UI** - REST API 和基础监控端点
-
-参考项目文档：
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - 整体架构设计
-- [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md) - 设计原则
-- [PHASE1_IMPLEMENTATION.md](./PHASE1_IMPLEMENTATION.md) - 第一阶段实现计划
-
-## 命令速查
-
-```bash
-# 编译
-mvn clean compile -DskipTests
-
-# 测试
-mvn test                    # 单元测试
-mvn verify                  # 集成测试
-
-# 打包
-mvn clean package -DskipTests
-
-# 清理
-mvn clean
-
-# 查看依赖树
-mvn dependency:tree
-
-# 生成 JaCoCo 覆盖率报告
-mvn clean verify jacoco:report
-# 查看报告：target/site/jacoco/index.html
-
-# 启动应用
-cd lakehouse-flow-boot
-mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=dev"
-```
-
-## 许可证
-
-MIT License
+- `README.md`：系统边界和当前能力
+- `ARCHITECTURE.md`：当前架构与核心事务
+- `SCHEDULING_MODEL_DESIGN.md`：对象模型、DAG、action 和补数语义
+- `SCHEDULING_INTENT_CONTRACT.md`：下游消费与 snapshot 归因契约
+- `DEVELOPMENT.md`：开发规则
+- `PHASE2_PROGRESS.md`：当前进度和唯一待办基准

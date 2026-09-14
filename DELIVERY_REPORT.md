@@ -1,4 +1,7 @@
 # Lakehouse Flow 项目交付报告
+
+> 历史文档：仅记录 2026-09-11 的 Phase 0 文档交付。其中模块、路线图、executor 和完成度描述均可能过期，不作为当前架构、技术栈或进度依据；请使用 `DOCS_INDEX.md` 和 `PHASE2_PROGRESS.md`。
+
 **日期**: 2026-09-11  
 **状态**: ✅ Phase 0 完成，项目初始化和文档体系完善
 
@@ -304,4 +307,3 @@ lakehouse-flow/
 
 **建议**: 
 立即启动 Week 1 工作（Maven 项目、数据库、Spring Boot 配置），遵循 PHASE1_IMPLEMENTATION.md 的计划推进。有任何疑问可参考对应文档或 GLOSSARY.md 术语表。
-

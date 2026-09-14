@@ -1,8 +1,8 @@
 # Lakehouse Flow 当前进度基准
 
-**最后更新**: 2026-09-13
+**最后更新**: 2026-09-14
 **基准用途**: 后续开发进度、差距检查和版本目标均以本文档为准。
-**当前推进项**: P0 正确性与工程门槛已闭合并由默认分支 CI 强制验证；补数功能模型已达到退出标准；G2、G7、G11、G12、G14 已完成当前范围。下一功能项进入 P1 的 G13 高级并发策略；G8 查询聚合、G9 可信身份/RBAC、G10 整体 E2E 与 Iceberg/Hudi adapter 均按当前决策后移。
+**当前推进项**: `LF-1.0` 范围已收敛为单团队受信环境下的真实 Paimon 闭环；数据入口固定为 Flink CDC 持续流式写入 ODS，DWD/DWS/ADS 由同一套 Flink 流批一体代码按场景选择流式或批式运行，正式投递通道固定为 `DATABASE_TABLE + HTTP`。下一步先完成 source-aware 结果语义，再补齐平台作业控制与单表单 writer、流批一体调度契约、Flink/Paimon 真实闭环和整体 Testcontainers E2E。
 
 ## 目标边界
 
@@ -16,11 +16,11 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 
 | 优先级 | 判定标准 | 当前状态 |
 |--------|----------|----------|
-| P0 | 会破坏 snapshot 归因、幂等、DAG 顺序、目标日期互斥、事务/offset 一致性、可恢复性、构建可复现性或“只调度不执行”边界 | 当前已闭合；必须持续由单测、覆盖率门槛和默认分支 CI 守护 |
-| P1 | 不破坏现有正确性，但影响核心调度能力完整度，例如明确失败关闭的高级并发/去重策略 | 下一步推进 G13 `SERIAL_DISCARD` / `SERIAL_PRIORITY` / `dedupeWindow` |
-| P2 | 查询/UI、可信身份/RBAC、特定 MQ 产品绑定、更多湖格式和整体 E2E 等已明确后移能力 | 保持延期，不因“尚未实现”自动升级为 P0 |
+| P0 | 会破坏 snapshot 归因、幂等、DAG 顺序、目标日期互斥、事务/offset 一致性、可恢复性、构建可复现性或“只调度不执行”边界 | 基础正确性已由单测和 CI 闭合；`LF-1.0` 仍有真实 Paimon 闭环、source-aware 结果语义、PostgreSQL 高可用恢复和 DB/HTTP 端到端验证未闭合 |
+| P1 | 不破坏现有正确性，但影响 `LF-1.0` 在受信生产环境中的排障和契约稳定性 | 补齐最小运维查询、API/intent/migration 兼容策略和下游幂等验收 |
+| P2 | 不影响 `LF-1.0` 单团队 Paimon 闭环的扩展能力 | 可信身份/RBAC、Iceberg/Hudi、具体 MQ 绑定、Web UI、完整聚合查询和 G13 高级策略后移至 1.1+ |
 
-P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实湖环境和多 scheduler 节点验证仍是投产前验收项，但按当前决策暂不阻塞功能推进。
+已闭合的单元级 P0 不表示系统已经达到 `LF-1.0`。从本次基准起，整体 Testcontainers E2E、真实 Flink/Paimon 闭环和多 scheduler 节点 PostgreSQL 语义均为 1.0 发布门槛，不再作为普通后移项。
 
 ## 版本目标
 
@@ -31,6 +31,79 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 | LF-0.3 | 最小 API 与调度意图交付 | 可通过 API 管理 FlowPlan、触发 action、查询实例和 snapshot 证据；Lakehouse Flow 主动发布不可变调度意图，下游通过库表、被调用接口或 MQ 被动接收。 |
 | LF-0.4 | Action 能力增强 | 支持 workflow/node 级重跑、补数、跳过、取消、snapshot 重检；补数严格遵守 DAG snapshot 依赖，只允许选中起点绕过前置节点。 |
 | LF-0.5 | 生产化调度控制面 | 支持补偿扫描、并发保护、Flow 级隔离、审计查询、可观测性和运维排障视图。 |
+| LF-1.0 | 单团队受信环境的可投产 Paimon 闭环 | 通过 Flink CDC 流式 ODS、Flink 流批一体 writer-side adapter 和真实 Paimon source 验证普通 DAG、action 与补数；数据库和 HTTP 投递可用；PostgreSQL 多节点、中断、重占、回滚与 offset 恢复通过整体 E2E；结果、契约和运维语义稳定。 |
+| LF-1.1+ | 多团队与生态扩展 | 按真实需求增加可信身份/RBAC、Iceberg/Hudi、具体 MQ、Web UI 和高级并发策略。 |
+
+## LF-1.0 目标与发布门槛
+
+### 部署边界
+
+1. `LF-1.0` 面向单团队受信环境。`FlowPlan.owner` 和 `flowSpaceCode` 继续提供 Flow 级归属与逻辑隔离，但可信身份、RBAC 和租户配额不是 1.0 发布门槛。
+2. 唯一强制湖格式是 Apache Paimon 1.3.x。Iceberg/Hudi 保持 SPI 扩展目标，不为了 1.0 虚构第二套实现。
+3. 业务库增量入湖固定使用 Flink CDC 持续流式写入 Paimon ODS。该常驻数据入口由平台控制面发起启动/重启意图、平台执行面托管运行；Lakehouse Flow 连续观察 ODS 业务数据 snapshot，并以其 snapshot/watermark 推进作为下游依赖事实，不为每条 CDC 变更重复创建执行意图。
+4. DWD、DWS、ADS 的计算模式不按数仓层级写死。Flow/Node 只选择 `STREAMING` 或 `BATCH`，不保存 `FLINK`、`SPARK` 等引擎类型。`LF-1.0` 的真实执行参考使用统一 Flink Table/SQL 与 Paimon writer 适配边界，但 DAG、补数、重跑、互斥和 snapshot 确认保持引擎无关。
+5. 批式处理以有界输入完成后的最终目标数据 snapshot 作为逻辑完成证据；流式回放以已经完整覆盖本次冻结输入 snapshot/watermark 边界的数据提交作为完成证据。具体 checkpoint、job-end 或其他 commit hook 由执行适配器解释。`lakehouse-flow.final=true` 表示本次 intent 的逻辑边界已完成，不表示常驻作业结束。
+6. Lakehouse Flow 运行时不提交、托管、停止或读取任何执行引擎的 job 状态。它只发送 intent，并从 Paimon snapshot 读取可归因证据。
+7. 作业启动和重启必须从平台控制面发起。Lakehouse Flow 将 `START_JOB` / `RESTART_JOB` 持久化为独立 `JobControlIntent` 并可靠投递，执行侧根据 `writerJobKey` 路由到实际引擎；该对象绑定 `WriterJobBinding`，不伪造 task、workflow、业务日期或引擎类型。传输 ACK 或外部 job 状态都不作为结果，仍由新 writer epoch 下的目标 snapshot 推进确认。
+8. 一个 FlowPlan DAG 内允许同时存在流式和批式节点，但规范化到物理表后的 `tableAssetKey` 只能绑定一个稳定 `writerJobKey`。不同 Flow、不同节点、不同模式或不同业务日期都不能以不同作业并发写同一张表。
+9. 1.0 正式投递通道是 `DATABASE_TABLE` 和 `HTTP`。MQ 保留稳定 SPI，不强制绑定 Kafka、Pulsar 或 RabbitMQ。
+
+### 结果语义
+
+结果必须保持三个正交维度，不合并为一个包含下游运行状态的大状态机：
+
+| 维度 | 对外语义 | 判定依据 |
+|------|----------|----------|
+| Snapshot 结果 | `WAITING` / `SNAPSHOT_CONFIRMED` / `SNAPSHOT_NOT_ADVANCED` | 仅依据 baseline 之后可归因的目标业务数据 snapshot |
+| Delivery 状态 | `PENDING` / `PUBLISHING` / `RETRY_WAIT` / `PUBLISHED` / `DELIVERY_EXHAUSTED` | 仅依据 DB/HTTP 传输证据；存储层 `EXHAUSTED` 对外表达为 `DELIVERY_EXHAUSTED` |
+| Source 健康 | `HEALTHY` / `REPAIRABLE` / `SOURCE_BLOCKED` | 依据 source range、durable offset、事件账本与 AssetState 对账；存储层 `BLOCKED` 对外表达为 `SOURCE_BLOCKED` |
+
+`SNAPSHOT_CONFIRMED` 只能由可归因的目标 snapshot 产生。`SNAPSHOT_NOT_ADVANCED` 只能在确认窗口结束且 source 证据链已追平、无 retention gap 或投影缺口时产生。source 不可用、落后尚未补齐或证据不完整时必须保持 snapshot 结果待定，并单独暴露 `SOURCE_BLOCKED`；不得因无法观测而推断下游失败。暂时中断后如能连续补扫并证明无缺口，可恢复确认判定。
+
+`DELIVERY_EXHAUSTED` 只表示在投递窗口内未获得传输 ACK，不表示下游没有启动、执行失败或不会稍后提交 snapshot。即使 delivery 已耗尽，snapshot 确认仍依据事件证据独立进行。
+
+### 发布门槛
+
+| 编号 | 门槛 | 验收标准 | 当前状态 |
+|------|------|----------|----------|
+| R1 | 真实 Flink/Paimon 闭环 | 真实业务库变更经 Flink CDC 持续流式写入 Paimon ODS；DWD/DWS/ADS 加工链路至少选择一个流式节点和一个批式节点，验证统一 writer adapter 写入全部归因属性，Paimon source 读回并完成输入边界、分区证据、DAG 与补数推进 | 未完成 |
+| R2 | Action 真实闭环 | 普通调度、重跑、完整 Flow 补数、Node 子图补数和失败恢复均在真实 Paimon 上遵守同一 DAG/snapshot 不变量 | 模型与单测完成，E2E 未完成 |
+| R3 | PostgreSQL 高可用与恢复 | 多 scheduler 并发、行锁、进程中断、claim 过期重占、新旧 fencing、事务回滚和 source offset 恢复经整体 E2E 通过 | 单测完成，E2E 未完成 |
+| R4 | 正式投递 | 数据处理与作业控制意图都支持 `DATABASE_TABLE + HTTP`；数据库无丢 intent，HTTP 至少一次投递、重试、超时、死信和 `intentKey` 幂等在真实 PostgreSQL/网络上验证 | 数据处理实现与单测完成；作业控制及整体 E2E 未完成 |
+| R5 | 稳定结果语义 | 确认、未推进、投递耗尽和 source 阻塞可独立查询；source 缺口不得产生 `SNAPSHOT_NOT_ADVANCED` | 投递/source 已分模型，超时与 source 健康门禁未完成 |
+| R6 | 稳定契约 | 冻结 1.0 REST API、`SchedulingIntent` 1.3、`JobControlIntent` 1.0、Flyway 只前进迁移策略和下游 `intentKey` 幂等要求，并有兼容性回归 | 当前数据处理契约为 1.2；目标数据处理 1.3 和作业控制 1.0 尚待实现，最终冻结与兼容性验收未完成 |
+| R7 | 生产运维闭环 | 阻塞原因、delivery 死信、snapshot 证据、补数批次、source 对账和关键告警可通过 API/指标查询，无需登录数据库 | 部分完成 |
+| R8 | 工程质量 | JDK 17 + `./mvnw clean verify` 通过；service line >= 90%、branch >= 65%；每个显式 public service 方法有直接单测入口 | 已完成，新代码必须持续满足 |
+| R9 | 作业生命周期与单表单写入者 | 平台可对 `WriterJobBinding` 发起独立 `JobControlIntent(START_JOB|RESTART_JOB)`，执行侧以 writer epoch fencing；控制意图不创建 task/workflow；发布两个不同 `writerJobKey` 指向同一物理表必须失败，混合流批 DAG 中不同表可独立推进 | 未完成 |
+
+### 整体 E2E 故障矩阵
+
+`lakehouse-flow-test` 必须作为整个系统的验收入口，不把单个模块的 Testcontainers 测试冒充整体 E2E。至少覆盖：
+
+1. source snapshot 读取后、摄入事务提交前中断，验证事件、AssetState 和 offset 共同回滚并可重放。
+2. intent 已提交、HTTP 调用前中断，验证新 scheduler 可重占并投递。
+3. HTTP 已送达、ACK 落库前中断，验证至少一次重投与下游 `intentKey` 幂等。
+4. 目标 snapshot 事件已持久化、task 确认前中断，验证重扫只产生一份确认证据并正确释放 DAG。
+5. claim 租约过期时新旧 scheduler 竞争，验证旧 fencing token 无法覆盖新 holder。
+6. 两个 scheduler 竞争同一 Flow 并发名额、目标日期槽位和 source offset，验证 PostgreSQL 行锁与唯一约束下无重复首发、无 offset 倒退。
+7. 一个 DAG 同时包含流式和批式节点：流式父节点以输出资产 snapshot/watermark 作为边证据，批式父节点以同一调度实例的已确认输出作为边证据；验证汇聚下游必须等待全部父边和自身额外依赖，并冻结完整输入向量。Flow/intent 中不得出现 Flink/Spark 引擎字段。
+8. 两个 Flow/节点尝试绑定同一物理表，验证不同 `writerJobKey` 在发布期被拒绝；平台重启同一 writer 时只产生 `JobControlIntent` 而不产生 task/workflow，旧 epoch 的迟到 snapshot 不能确认新控制或数据处理 intent。
+9. 常驻流 writer 的目标表执行补数，验证回放由当前流 epoch 消费，或平台完成流 epoch -> 批 epoch -> 新流 epoch 的受控切换，整个过程不存在第二个并发 writer。
+
+### 当前开发顺序
+
+1. `LF1-01` Source-aware confirmation：持久化表级 `SnapshotSourceHealth`，让分区/整表 intent 可确定绑定受管 source；在 snapshot 超时判定前校验截止时间之后的 source 证据链，并暴露正交的 snapshot/delivery/source 结果。
+2. `LF1-02` 作业与单写入者模型：增加稳定 `writerJobKey`、规范化 `tableAssetKey`、发布期唯一绑定和 writer epoch；新增不绑定 task/workflow/bizDate 的 `JobControlIntent` / delivery，承载平台 `START_JOB` / `RESTART_JOB`，并复用已有可靠投递算法与 publisher SPI。
+3. `LF1-03` 流批一体调度契约：Flow/Node 只冻结 `processingMode=STREAMING|BATCH`；运行时 intent 冻结混合父边的 input snapshot/watermark vector，流式父边来自资产推进，批式父边来自同实例确认输出。完成提交细节由执行适配器解释，两种模式输出统一的 intent-correlated snapshot 证据。
+4. `LF1-04` Flink/Paimon writer-side adapter：先以最小编译/写入探针锁定与 Paimon 1.3.x 匹配的 Flink minor 版本，再在独立下游 adapter 模块中统一支持流式 checkpoint 和批式结束提交的 snapshot 属性注入及 writer epoch fencing。
+5. `LF1-05` 真实业务闭环 E2E：贯穿业务库变更、Flink CDC 流式 ODS、平台作业启动/重启、DB/HTTP intent、DWD/DWS/ADS 混合流批 DAG、Paimon source、归因、DAG、重跑和补数。
+6. `LF1-06` 高可用与恢复 E2E：按上述故障矩阵验证 PostgreSQL 锁、事务、lease、fencing 和 offset。
+7. `LF1-07` 最小运维 API：补齐阻塞原因和 source 对账查询，复用已有死信、action、补数和 snapshot 证据 API，不开发 Web UI。
+8. `LF1-08` 契约冻结：在真实 E2E 反馈结束后冻结 1.0 API、intent contract、migration 兼容策略和下游幂等要求。
+
+### 容量基线决策
+
+容量基线不作为当前 `LF-1.0` 功能开发退出门槛，因为 Flow 数、节点数、受管资产数、snapshot 速率、intent 积压和恢复时间必须在真实生产负载下测量。未获得该证据前不编造吞吐、延迟或 SLA，也不声称“容量已验收”。上线后以受控流量逐步采集这些数据，再固化首份生产容量报告和告警阈值。
 
 ## 当前已完成能力
 
@@ -49,10 +122,10 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 | FlowPlan 服务 | 已完成基础版 | 支持草稿、版本、节点、发布和查询；发布前拒绝缺失依赖、自依赖、重复节点和环。 |
 | 最小 API 层 | 已完成基础版 | `lakehouse-flow-api` 已暴露 FlowPlan/Node 管理、action 触发、实例和 snapshot 证据查询。 |
 | 调度意图交付 | 已完成基础版 | 内部 scanner 冻结 baseline，并按单一选定路由写入版本化完整 `instructionPayload`；数据库立即可见，HTTP/MQ 通过统一 publisher SPI 主动推送，外部投递支持 claim 租约、fencing、指数退避、最大尝试和死信审计。 |
-| 目标日期准入互斥 | 已完成基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化槽位；先准入再冻结 baseline，snapshot 确认或确认超时后释放，冲突任务保持 READY 等待后续扫描。 |
+| 目标日期准入互斥 | 已完成基础版 | 正常、补数、恢复和重跑共享 `targetAssetKey + bizDate` 持久化槽位；先准入再冻结 baseline，snapshot 确认或发布准入租约过期后释放，冲突任务保持 READY 等待后续扫描。 |
 | 发布版本策略执行 | 已完成基础版 | 版本 `confirmationPolicyJson` 和节点覆盖驱动确认窗口；版本 `concurrencyPolicyJson` 驱动目标准入租约和活跃 workflow 上限，超限任务保持 READY 且不冻结 baseline。 |
-| FlowPlan 自然触发 | 已完成基础版 | 只有外部数据提交和合法非 action 最终 snapshot 评估 `PUBLISHED` 版本；action-owned、中间、孤儿和维护 snapshot 不进入自然触发。 |
-| DAG snapshot 推进 | 已完成基础版 | 下游节点只有在同业务日期、同 workflow 内所有直接父节点 `SNAPSHOT_CONFIRMED` 且自身外部门禁满足时才释放。 |
+| FlowPlan 自然触发 | 已完成基础版 | 只有外部数据提交和合法非 action 逻辑完成 snapshot 评估 `PUBLISHED` 版本；action-owned、中间、孤儿和维护 snapshot 不进入自然触发。 |
+| DAG snapshot 推进 | task-bound 基础版完成 | 当前下游只在同业务日期、同 workflow 内所有直接父 task `SNAPSHOT_CONFIRMED` 且自身外部门禁满足时释放；流式父节点的资产 snapshot/watermark 边证据属于 G19。 |
 | 摄入事务边界 | 已完成基础版 | 单个 source snapshot 的事件落库、AssetState 投影、DAG/FlowPlan 评估和 offset 推进在同一事务完成。 |
 | 湖格式 source SPI | 已完成基础版 | provider、source identity、opaque offset、格式排序和统一 snapshot observation 已与 Paimon SDK 解耦。 |
 | Paimon snapshot source | 实现待 E2E | Paimon 1.3 Catalog API 逐 snapshot 读取 properties，并从 delta manifests 推导 changedPartitions；保留历史缺口失败关闭。 |
@@ -64,19 +137,24 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 |------|------|----------|----------|------|
 | G1 | API 层缺失 | 基础完成 | LF-0.3 | 已新增 FlowPlan/Node、scheduling action、instance evidence、task scheduling intent 最小 REST API。 |
 | G2 | FlowPlan / Node 模型缺失 | 已完成 | LF-0.2 | 模型、发布图校验、日期模板、自然触发和实例定义锚点均已完成；旧 `AssetDependency` 运行时路径已移除。 |
-| G3 | 调度意图主动投递协议不完整 | 基础完成 | LF-0.3 | 已完成不可变 intent、版本化完整 payload、单一选定路由、统一 publisher SPI、数据库/HTTP/MQ 通道边界、内部 claim 租约与 fencing、退避重试、最大尝试和死信审计。HTTP 已有 Java 17 client；MQ 保持 broker-neutral gateway，具体产品绑定由部署适配器提供。真实事务/网络链路留待整体 E2E。 |
+| G3 | 调度意图主动投递协议不完整 | 基础完成 | LF-0.3 / LF-1.0 | 不可变 intent、版本化 payload、单路由、DB/HTTP/MQ 边界、claim、fencing、退避和死信已实现。1.0 还需真实 PostgreSQL 下验证 `DATABASE_TABLE`，以及真实网络下验证 HTTP 至少一次投递与下游幂等。具体 MQ 产品绑定不属于 1.0。 |
 | G4 | Node 级重跑和恢复能力不足 | 已完成 | LF-0.4 | 已支持 task/published node 局部重跑，以及 `FULL_SCOPE` 和单失败节点 `FAILED_NODE_CASCADE` 两种替代恢复；非闭合 DAG 或多失败节点请求会拒绝并要求全范围恢复。 |
 | G5 | 补数缺少批次、并发和级联策略 | 已完成 | LF-0.4 | 完整 Flow 与 Node 子图补数均已纳入统一批次模型，支持不可变节点范围、日期准入、级联、安全整日跳过、控制和失败替代恢复；审批上限按当前决策暂缓且不阻塞专题退出。 |
-| G6 | Target snapshot baseline 与节点绑定不足 | 基础完成 | LF-0.2 / LF-0.4 | intent 携带目标资产、定义锚点、baseline 和必须写入最终 snapshot 的归因属性；确认按历史事件而非任意 latest 推进，后续只由匹配 snapshot 驱动 DAG。 |
-| G7 | 补偿扫描还不够生产化 | 基础完成 | LF-0.5 | 已有 delivery publisher/scan 指标、channel/status 记录数、死信筛选 API，以及物理 snapshot 轨和业务数据轨对账。落后 offset 连续补扫、已有物理/数据事件投影可重放；retention gap、offset ahead、事件缺失和无事件支撑的状态失败关闭。真实湖与 PostgreSQL 运行验证归入暂缓的整体 E2E。 |
-| G8 | 查询视图和审计视图不足 | 部分完成 | LF-0.5 | action 侧已支持按 Flow、版本、节点筛选摘要，并按 action key 联查补数批次和逐 task snapshot 证据；仍缺 Flow 聚合实例视图、分页游标、指标和运维 UI。 |
-| G9 | Flow 级隔离和并发策略未固化 | 部分建模 | LF-0.5 | `FlowPlan.owner/flowSpaceCode` 已记录归属，但当前 API 仍是全局 ID 访问且 `requestedBy` 只是审计字段，不构成授权；后续接可信身份后按 Flow 做 RBAC/配额，不引入重型租户层。 |
-| G10 | 真实湖格式 snapshot 归因元数据采集不完整 | 部分完成（Paimon 实现） | LF-0.5 | 已移除生产 mock，建立通用 source SPI，并实现 Paimon properties/delta-manifest 读取、分区推导、offset 批量扫描和 retention gap 失败关闭；待整体 E2E 与 Iceberg/Hudi 适配器。 |
+| G6 | Target snapshot baseline 与节点绑定不足 | 基础完成 | LF-0.2 / LF-0.4 | intent 携带目标资产、定义锚点、baseline 和必须写入逻辑完成 snapshot 的归因属性；确认按历史事件而非任意 latest 推进，后续只由匹配 snapshot 驱动 DAG。 |
+| G7 | 补偿扫描还不够生产化 | 基础完成 | LF-0.5 / LF-1.0 | delivery/source 指标、死信 API、双轨对账、连续补扫与投影重放已实现。1.0 需让 snapshot 超时判定消费 source 健康证据，并在真实 Paimon/PostgreSQL 上验证中断恢复。 |
+| G8 | 查询视图和审计视图不足 | 部分完成 | LF-0.5 / LF-1.0 | action、补数、snapshot 证据和 delivery 死信已可查。1.0 只补齐阻塞原因和 source 对账 API；Flow 聚合、稳定游标、通用 Web UI 后移。 |
+| G9 | Flow 级隔离和并发策略未固化 | 部分建模 | LF-1.1+ | `FlowPlan.owner/flowSpaceCode` 已记录归属。`LF-1.0` 是单团队受信环境，不强制可信身份和 RBAC；后续仍按 Flow 增加轻量授权与配额，不引入重型租户层。 |
+| G10 | 真实湖格式 snapshot 归因元数据采集不完整 | 部分完成（Paimon source 已实现） | LF-1.0 | 通用 source SPI 与 Paimon properties/delta-manifest/offset 实现已完成；1.0 尚缺同时支持流式 checkpoint 和批式结束提交的 Flink writer-side adapter，以及真实闭环 E2E。Iceberg/Hudi 实现后移至 1.1+。 |
 | G11 | Action snapshot 与正常自然触发未隔离 | 已完成 | LF-0.4 / LF-0.5 | 已按持久化 `intentKey -> triggerType` 分类；补数、恢复、重跑只推进所属实例，非法/中间/维护 snapshot 失败关闭；action 查询也不再把未归属的 latest 推进显示为成功。日期隔离要求 FlowPlan 使用 `${bizDate}` 分区资产。 |
-| G12 | 跨实例目标资产日期准入缺失 | 基础完成 | LF-0.5 | 已建立同 `targetAssetKey + bizDate` 的持久化唯一槽位和行锁，覆盖正常、补数、恢复、重跑；冲突项留在 READY，确认/超时释放，过期租约可被重占且旧 holder 不能释放新 holder。真实 PostgreSQL 竞争语义待整体 E2E 验证。 |
-| G13 | 发布版本控制策略未执行 | 基础完成 | LF-0.5 | 已执行版本/节点确认超时、版本目标准入租约和 `maxActiveInstances`；支持 `PARALLEL` / `SERIAL_WAIT`，超限保持 READY。`SERIAL_DISCARD`、优先级队列和 dedupe window 尚未实现。 |
+| G12 | 跨实例目标资产日期准入缺失 | 基础完成 | LF-0.5 / LF-1.0 | `targetAssetKey + bizDate` 唯一槽位、行锁、过期重占和 holder fencing 已实现；它只解决逻辑日期冲突，不替代 G20 的物理表 writer 唯一绑定。1.0 需通过多 scheduler PostgreSQL 整体 E2E 证明竞争语义。 |
+| G13 | 发布版本控制策略未执行 | 基础完成 | LF-0.5 / LF-1.0 | 1.0 仅要求已实现的 `PARALLEL`、`SERIAL_WAIT` 和 `maxActiveInstances` 在真实 PostgreSQL 上通过竞争验收。`SERIAL_DISCARD`、`SERIAL_PRIORITY` 和 `dedupeWindow` 后移至 1.1+。 |
 | G14 | 调度决策可观测性不足 | 已完成 | LF-0.5 | 已按低基数结果记录发布版本检查、自然触发决策和耗时，按稳定状态/类别聚合 task 与补数等待积压，并输出高维结构化证据和 Prometheus 初始告警基线。 |
 | G15 | 默认分支 CI/CD 与 Agent 约束失真 | 已完成 | 工程基线 | workflow 已迁移到 `master`，统一 JDK 17 + `./mvnw`，修复废弃 action，强制 Service 覆盖率门槛并在 CI 成功后构建产物；Copilot agent 已移除执行器和下游状态模型。 |
+| G16 | Snapshot 超时与 source 健康未联动 | 未完成 | LF-1.0 | 当前 source 对账已能识别 `HEALTHY/REPAIRABLE/BLOCKED`，但结果未持久化，intent 也无法在确认层稳定绑定受管 source。需新增表级 `SnapshotSourceHealth`，并要求超时判定使用截止时间之后的完整证据，防止 source 缺口被误判为 `SNAPSHOT_NOT_ADVANCED`。 |
+| G17 | 整体高可用与恢复 E2E 缺失 | 未完成 | LF-1.0 | `lakehouse-flow-test` 需贯穿真实 PostgreSQL、DB/HTTP 投递、Paimon/Flink 闭环以及多 scheduler 故障矩阵。 |
+| G18 | 1.0 契约与 migration 策略未冻结 | 部分完成 | LF-1.0 | 现有数据处理 intent 1.2 和 REST API 为冻结基础；目标 `SchedulingIntent` 1.3 与 `JobControlIntent` 1.0 需完成兼容性测试、Flyway 只前进规则、版本升级政策和下游幂等验收。 |
+| G19 | 流批混合节点与输入边界契约缺失 | 未完成 | LF-1.0 | 当前 `ScheduleNode` 没有引擎无关的 `processingMode=STREAMING|BATCH`，intent 也未携带完整 input snapshot/watermark vector；`DagProgressionService` 仍要求每个父节点都有同实例 confirmed task，无法表示自行消费并持续产出 snapshot 的流式父节点。需把 DAG 门禁升级为混合父边证据向量，Flow/intent 不增加 Flink/Spark 字段，并把 `final` 定义为逻辑 intent 完成而不是引擎作业结束。 |
+| G20 | 平台作业生命周期与单表单写入者缺失 | 未完成 | LF-1.0 | 当前没有 `writerJobKey`、物理 `tableAssetKey` 唯一绑定、writer epoch 或 `START_JOB/RESTART_JOB` 控制意图；已有 `SchedulingIntent` 又受 task 非空和 task 唯一约束，只能表达数据处理。需新增独立 `JobControlIntent` / delivery，在发布期拒绝多 writer，并要求执行侧以 epoch fencing 保证重启前后的单写入者。 |
 
 ## 已完成推进项
 
@@ -147,10 +225,9 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 
 后续增强：
 
-1. 增加 Flow/Node 级实例聚合和游标查询视图。
-2. Flow/Node 级实例聚合、稳定游标和 Web 运维视图按当前决策后移。
-3. 由部署按选定 MQ 产品实现 `SchedulingIntentMessageGateway`，并在整体 E2E 中验证真实事务和网络重试。
-4. 将真实 Paimon source 纳入系统级 E2E，并基于统一 SPI 增加 Iceberg/Hudi source。
+1. Flow/Node 级实例聚合、稳定游标和 Web 运维视图按当前决策后移。
+2. `LF-1.0` 使用 `DATABASE_TABLE + HTTP` 完成整体 E2E；具体 MQ 产品绑定后移。
+3. `LF-1.0` 通过 Flink writer-side adapter 将真实 Paimon source 纳入系统级 E2E；Iceberg/Hudi source 后移。
 
 暂不做：
 
@@ -172,7 +249,7 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 8. Mockito 测试覆盖所有 reconciliation service public 方法、三类运维结果、指标和死信筛选。
 9. V20 将 `LakehouseEvent.dataChange` 提升为 typed 字段，并把 `AssetState` 拆成物理观察轨和业务数据轨；只从可确定分类的 durable data event 回建已有表/分区业务轨，compaction 只推进表级观察轨，不能满足依赖、创建分区状态或确认 intent。
 
-退出规则：单元级功能已达到基础退出标准；真实 Paimon/PostgreSQL 的指标抓取、锁竞争和故障恢复验证随整体 Testcontainers E2E 补齐，不再单独阻塞 G7 功能推进。
+退出规则：单元级功能已达到 G7 基础退出标准；真实 Paimon/PostgreSQL 的指标抓取、source-aware 超时、锁竞争和故障恢复已上升为 `LF-1.0` 整体发布门槛。
 
 ### G10 / LF-0.5: 多湖 Snapshot Source
 
@@ -191,17 +268,16 @@ P0 闭合不表示系统已经生产就绪。整体 Testcontainers E2E、真实�
 9. `snapshotProperties` 与 `changedPartitions` 已提升为统一 `LakehouseSnapshot` 强类型字段，由公共 mapper 投影到事件，避免新增格式复制隐式 payload 键约定。
 10. 调度 `snapshotId` 明确定义为适配器归一化的单调坐标：Paimon 使用 snapshot id，Iceberg 预留 sequence number，Hudi 预留 timeline instant；原生非顺序 id 留在 payload。
 11. source offset 在排序和事务推进中统一使用格式 adapter comparator；不同格式的 source 不得声明相同逻辑资产键。
-12. 已确认 Paimon 1.3 普通 SQL/标准 `BatchTableCommit` 不直接提供单次 snapshot 任意属性注入；下游需 writer-side adapter 在最终 commit 写入归因属性，且不得以 `commitUser` / `commitIdentifier` 弱替代。
+12. 已确认 Paimon 1.3 普通 SQL/标准 commit 链路不能假定会自动注入 Lakehouse Flow 的单次 snapshot 归因属性；下游需 writer-side adapter 在满足本次逻辑输入边界的 commit 写入归因属性，且不得以 `commitUser` / `commitIdentifier` 弱替代。
 13. source offset 更新会锁定既有 `(sourceType, sourceName)` 行，配合数据库唯一约束阻止多调度实例并发扫描造成位点倒退。
 14. source 首次接入默认从 `LATEST` 建立当前事实，避免存量 snapshot 自动形成历史调度风暴；`EARLIEST` 仅允许显式配置，常规补数仍走统一批次模型。
 
 G10 剩余验收项：
 
-1. 在 Lakehouse Flow 整体 E2E 中接入真实 Paimon catalog/table 和 writer-side property adapter，贯穿带属性 snapshot commit、事件入库、分区 AssetState、路由、intent 确认、DAG 和补数推进。
-2. 基于同一 SPI 增加 Iceberg source，明确 snapshot summary、operation、partition diff 和 offset 语义。
-3. 基于同一 SPI 增加 Hudi source，明确 instant timeline、commit metadata、partition diff 和 offset 语义。
+1. 实现下游侧 Flink/Paimon writer-side adapter：批式路径在有界输入完成后的 commit 注入属性；流式路径在 checkpoint 已覆盖 intent 冻结输入边界后的 commit 注入属性。
+2. 在 Lakehouse Flow 整体 E2E 中接入真实业务库、Flink CDC、Paimon catalog/table 和流批一体 writer adapter，贯穿带属性 snapshot commit、事件入库、分区 AssetState、路由、intent 确认、DAG 和补数推进。
 
-退出规则：至少一个真实 Paimon 端到端场景通过，且新增 Iceberg/Hudi adapter 不需要修改 service/scheduler 核心接口；在此之前 G10 保持“部分完成”。
+退出规则：Flink CDC 流式 ODS、至少一个流式加工节点和至少一个批式加工节点的真实 Paimon 端到端场景通过，且三条路径使用统一代码与 writer 适配边界，不得将 Flink/Paimon 依赖带入 service/scheduler 核心。Iceberg/Hudi 适配不是 G10 的 1.0 退出条件。
 
 ### G13 / LF-0.5: 发布版本策略执行
 
@@ -220,8 +296,8 @@ G10 剩余验收项：
 
 G13 剩余增强：
 
-1. 在明确触发丢弃和优先级排队的审计语义后，再实现 `SERIAL_DISCARD` / `SERIAL_PRIORITY`。
-2. 真实多 scheduler 节点下的 PostgreSQL 行锁竞争归入整体 Testcontainers E2E，当前按决策暂缓。
+1. `LF-1.0` 只验收 `PARALLEL` / `SERIAL_WAIT` / `maxActiveInstances` 的真实 PostgreSQL 并发语义。
+2. 触发丢弃、优先级排队和去重窗口的审计语义暂不冻结，`SERIAL_DISCARD` / `SERIAL_PRIORITY` / `dedupeWindow` 后移至 1.1+。
 
 ### G14 / LF-0.5: 调度决策可观测性
 
@@ -248,6 +324,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 5. 重写 Copilot custom agent，以当前进度文档为真源，明确禁止执行器、任务运行状态回调和旧 `AssetDependency` 路径。
 6. `.mavenrc` 只在 macOS 探测 JDK 17，并在 Linux/CI 保留 `setup-java` 提供的 `JAVA_HOME`，消除 Wrapper 的平台耦合。
 7. Boot 模块显式执行 Spring Boot `repackage`；Artifact workflow 在上传前校验 `JarLauncher`、应用 `Start-Class` 和 `BOOT-INF/lib`，拒绝只有几 KB 的不可执行薄 JAR。
+8. 文档已按进度、架构、协议、操作和历史归档分层；当前技术栈与 Quickstart 只描述已实现能力。Compose 不再把 Flyway SQL 直接交给 PostgreSQL 按文件名字典序执行，空库已由应用按 1.0 至 20.0 顺序迁移并通过健康检查。
 
 退出标准已达到（2026-09-13）：本地 `./mvnw clean verify` 通过覆盖率门槛；默认分支 `Code Quality Checks`、`Maven Build and Test`、`Build Artifacts` 三条 workflow 均真实运行成功；上传前的可执行 JAR 校验通过，远端 artifact 压缩包为 98,078,717 bytes。
 
@@ -275,7 +352,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 14. 补数 intent 成功写入 outbox 后，`BackfillItem` 更新为 `INTENT_DELIVERED`，可与 `INTENT_READY` / `CANCELLED` 区分。
 15. 批次控制和 intent publication 对同一 `BackfillBatch` 加悲观写锁，避免暂停/取消与发布并发穿透。
 16. 每个业务日期只将用户选中的 `startNode` 置为 `READY_TO_SCHEDULE`；所有级联下游先进入 `WAITING_SNAPSHOT`。
-17. `DagProgressionService` 只在全部直接父节点的 target snapshot 已确认推进后释放下游，缺失父节点或未推进父节点都继续阻塞。
+17. `DagProgressionService` 当前只在同实例全部父 task 的 target snapshot 已确认推进后释放下游，缺失或未推进父 task 都继续阻塞；没有逐 snapshot task 的流式父节点尚待 G19 改为资产 snapshot/watermark 证据。
 18. 级联子图若在汇聚节点遗漏其他直接父节点，会在 action 展开前被拒绝；不会生成永远无法满足的等待项。
 19. `${bizDate}` / `${biz_date}` 在每个补数日期分别解析，避免多日期任务共享错误目标资产。
 20. `BackfillBatch` 新增 `progressionMode` / `maxActiveDates`，明确控制的是可交付业务日期数量，不是下游执行资源。
@@ -315,7 +392,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 54. action snapshot 证据视图只把 `SNAPSHOT_CONFIRMED` 显示为成功、`SNAPSHOT_NOT_ADVANCED` 显示为失败；较新的未归属 snapshot 保持未知。
 55. 新增 `SchedulingTargetAdmission` 与 V18 migration，以数据库唯一键和悲观行锁串行化同 `targetAssetKey + bizDate` 的首次发布，所有触发类型走同一准入路径。
 56. 只有获得槽位后才捕获 baseline 和写入 outbox；准入、baseline、intent、delivery 和 task 状态在同一事务提交，失败时共同回滚。
-57. 目标 snapshot 严格确认或确认窗口超时后释放槽位；租约过期允许后续调度重占，但只表示可再次下发，不声称旧下游工作已停止。
+57. 目标 snapshot 严格确认或发布准入租约过期后释放槽位；租约过期允许后续调度重占，但只表示可再次下发，不声称旧下游工作已停止，也不强制把 source 阻塞的旧 task 标记为未推进。
 58. 释放操作校验当前 holder task，晚到的旧 snapshot 不能释放新 holder；批量 scanner 遇到冲突会继续尝试后续独立任务，冲突任务保留 READY 等待重试。
 
 ### 补数专题退出标准
@@ -339,7 +416,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 1. Flow/Node 级实例聚合、稳定游标和 Web 运维 UI 按当前决策后移。
 2. 由部署增加具体 MQ broker gateway。
 3. 补数审批上限暂缓，待核心功能闭环稳定后再设计。
-4. 整体 Testcontainers E2E 与 Iceberg/Hudi source adapter 按当前决策暂缓。
+4. 补数的真实 Flink/Paimon 整体 Testcontainers E2E 纳入 `LF-1.0`；Iceberg/Hudi source adapter 后移至 1.1+。
 
 ## Action 语义基线
 
@@ -360,9 +437,9 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 
 ## 验证基线
 
-当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。Testcontainers 留到后续系统级 E2E：从 API/事件入口贯穿 PostgreSQL/Flyway、事务与约束、FlowPlan 决策、内部 outbox 发布、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独模块，也不用来替代当前单元测试。
+当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。`LF-1.0` 必须再由 `lakehouse-flow-test` 的整体 Testcontainers E2E 贯穿 API/事件入口、PostgreSQL/Flyway、事务与约束、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独模块，也不用来替代当前单元测试。
 
-2026-09-13 验证快照：JDK 17 下执行 `./mvnw clean verify` 共 308 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 91.1%、branch 69.5%、method 90.6%，line 90% 和 branch 65% 构建门槛实际通过。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 decision metrics 为 2/2、scheduling backlog metrics 为 1/1、delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 HTTP/MQ 网络重试、真实 Paimon writer/source 对账链路和有限并发版本锁竞争仍留待后续整体 Testcontainers E2E 验证。
+2026-09-14 验证快照：JDK 17 下执行 `./mvnw clean verify` 共 308 个测试，failure/error/skip 均为 0；service JaCoCo 为 line 91.1%、branch 69.5%、method 90.6%，line 90% 和 branch 65% 构建门槛实际通过。所有显式 public service 方法均存在测试源码中的直接调用入口，其中 decision metrics 为 2/2、scheduling backlog metrics 为 1/1、delivery query service 为 1/1、source reconciliation service 为 3/3。V13-V20 PostgreSQL migration、真实 DB/HTTP 投递、Flink/Paimon writer/source 链路和多 scheduler 锁竞争仍是 `LF-1.0` 待完成整体 E2E。
 
 每次推进后至少执行：
 
