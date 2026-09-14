@@ -45,6 +45,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MySQLContainer;
@@ -194,6 +195,9 @@ class OrderToGmvE2EIT {
 
     @Autowired
     private SnapshotSourceReconciliationService snapshotSourceReconciliationService;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
 
     /** Keep local random-port API calls outside host-level HTTP proxy configuration. */
     @BeforeEach
@@ -587,10 +591,11 @@ class OrderToGmvE2EIT {
                 });
         Map<String, Object> failedItem = getList(
                 "/api/v1/backfills/" + failedBatchId + "/items").get(0);
-        TaskInstance failedTask = taskInstanceRepository.findById(
-                longValue(failedItem, "taskInstanceId")).orElseThrow();
-        failedTask.setScheduledAt(LocalDateTime.now().minusMinutes(3));
-        taskInstanceRepository.saveAndFlush(failedTask);
+        long failedTaskId = longValue(failedItem, "taskInstanceId");
+        transactionTemplate.executeWithoutResult(status -> {
+            TaskInstance failedTask = taskInstanceRepository.findByIdForUpdate(failedTaskId).orElseThrow();
+            failedTask.setScheduledAt(LocalDateTime.now().minusMinutes(3));
+        });
         await().atMost(E2E_TIMEOUT)
                 .pollInterval(Duration.ofMillis(500))
                 .untilAsserted(() -> assertThat(snapshotSourceReconciliationService.reconcileAllSources())
@@ -600,7 +605,7 @@ class OrderToGmvE2EIT {
                         }));
 
         awaitBackfillStatus(failedActionKey, "FAILED");
-        TaskInstance timedOut = taskInstanceRepository.findById(failedTask.getId()).orElseThrow();
+        TaskInstance timedOut = taskInstanceRepository.findById(failedTaskId).orElseThrow();
         assertThat(timedOut.getState()).isEqualTo(SchedulingStates.SNAPSHOT_NOT_ADVANCED);
         assertThat(timedOut.getSourceHealth()).isEqualTo("HEALTHY");
 
