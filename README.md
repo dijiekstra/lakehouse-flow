@@ -318,7 +318,7 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 
 ## 下一步建议
 
-1. 手动运行 `LF-1.0 Release Candidate` workflow，以完整 Testcontainers E2E、冻结契约和制品校验生成首个发布候选。
-2. 按 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 在受信试运行环境接入真实执行平台的 `DATABASE_TABLE` 或 HTTP 消费端，并完成 runbook 演练。
+1. 按 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 在受信试运行环境接入真实执行平台的 `DATABASE_TABLE` 或 HTTP 消费端，并完成 runbook 演练。
+2. 试运行通过后将版本固定为 `1.0.0`，针对同一提交重新运行 `LF-1.0 Release Candidate` workflow，再创建 annotated tag `v1.0.0`。
 3. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
 4. LF-1.1+ 再推进可信身份/RBAC、Iceberg/Hudi、具体 MQ 产品绑定和 Web 运维视图。
