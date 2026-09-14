@@ -246,7 +246,7 @@ public class SchedulingActionService {
                     sourceTask.getTargetAssetKey(),
                     sourceTask.getFlowPlanVersionId(),
                     sourceTask.getScheduleNodeId());
-            taskInstanceService.markSchedulable(rerunTask.getId());
+            taskInstanceService.markSchedulableAsActionEntry(rerunTask.getId());
             markWorkflowDecisionEmitted(rerunWorkflow);
 
             return markApplied(
@@ -337,7 +337,7 @@ public class SchedulingActionService {
                     targetAssetKey,
                     versionId,
                     node.getId());
-            taskInstanceService.markSchedulable(rerunTask.getId());
+            taskInstanceService.markSchedulableAsActionEntry(rerunTask.getId());
             markWorkflowDecisionEmitted(rerunWorkflow);
 
             return markApplied(
@@ -1526,7 +1526,7 @@ public class SchedulingActionService {
                     sourceTask.getTargetAssetKey(),
                     sourceTask.getFlowPlanVersionId(),
                     sourceTask.getScheduleNodeId());
-            taskInstanceService.markSchedulable(task.getId());
+            taskInstanceService.markSchedulableAsActionEntry(task.getId());
             emittedTasks.add(task);
         }
         return emittedTasks;
@@ -1707,7 +1707,7 @@ public class SchedulingActionService {
             boolean entryNode = entryNodeCodes.contains(node.getNodeCode());
             boolean concurrencyQueued = concurrencyQueuedNodeCodes.contains(node.getNodeCode());
             if (entryNode) {
-                taskInstanceService.markSchedulable(task.getId());
+                taskInstanceService.markSchedulableAsActionEntry(task.getId());
             } else {
                 taskInstanceService.markWaitingForSnapshot(
                         task.getId(),

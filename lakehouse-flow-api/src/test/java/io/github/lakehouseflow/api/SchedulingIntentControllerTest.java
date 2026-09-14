@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -81,6 +82,8 @@ class SchedulingIntentControllerTest {
                 BIZ_DATE,
                 "paimon.dwd.orders",
                 "100",
+                "BATCH",
+                List.of(),
                 Map.of("intentKey", "task-instance:22"),
                 SchedulingIntentDeliveryChannels.DATABASE_TABLE,
                 "scheduling_intent",

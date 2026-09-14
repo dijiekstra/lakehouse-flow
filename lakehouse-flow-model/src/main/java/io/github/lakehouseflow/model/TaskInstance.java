@@ -88,6 +88,12 @@ public class TaskInstance {
     private Long scheduleNodeId;
 
     /**
+     * Whether an explicit action selected this node as a scheduling entry and bypassed its parents.
+     */
+    @Column(name = "parent_dependency_bypassed", nullable = false)
+    private boolean parentDependencyBypassed;
+
+    /**
      * Business date
      */
     @Column(name = "biz_date", nullable = false)

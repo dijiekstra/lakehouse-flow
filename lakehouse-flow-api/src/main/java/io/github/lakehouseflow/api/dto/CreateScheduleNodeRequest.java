@@ -11,6 +11,7 @@ import java.util.Map;
  * @param nodeCode stable node code within the version
  * @param nodeName human-readable node name
  * @param nodeType scheduler-side node type
+ * @param processingMode engine-neutral STREAMING or BATCH mode; defaults to BATCH
  * @param dependsOnNodes upstream node codes
  * @param inputDependencySpecJson input asset dependency conditions
  * @param outputAssetKey target asset expected to advance after downstream consumption
@@ -21,6 +22,7 @@ public record CreateScheduleNodeRequest(
         @NotBlank String nodeCode,
         @NotBlank String nodeName,
         @NotBlank String nodeType,
+        String processingMode,
         List<String> dependsOnNodes,
         Map<String, Object> inputDependencySpecJson,
         String outputAssetKey,

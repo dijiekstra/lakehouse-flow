@@ -69,6 +69,7 @@ public class SchedulingIntentService {
     private final SchedulingIntentDeliveryRepository schedulingIntentDeliveryRepository;
     private final SchedulingTargetAdmissionService schedulingTargetAdmissionService;
     private final FlowPlanPolicyService flowPlanPolicyService;
+    private final InputSnapshotEvidenceService inputSnapshotEvidenceService;
 
     /** Global fallback for legacy tasks without a frozen FlowPlan policy. */
     @Value("${lakehouse-flow.snapshot-confirmation.timeout:PT1H}")
@@ -128,6 +129,8 @@ public class SchedulingIntentService {
      * @param bizDate business date represented by the instruction
      * @param targetAssetKey managed asset whose snapshot confirms the result
      * @param baselineSnapshotId snapshot frozen before publication
+     * @param processingMode engine-neutral STREAMING or BATCH mode
+     * @param inputSnapshotVector complete frozen parent and external input evidence
      * @param instructionPayload complete immutable downstream instruction
      * @param deliveryChannel transport channel used for publication
      * @param deliveryDestination channel-specific destination
@@ -156,6 +159,8 @@ public class SchedulingIntentService {
             LocalDateTime bizDate,
             String targetAssetKey,
             String baselineSnapshotId,
+            String processingMode,
+            List<Map<String, Object>> inputSnapshotVector,
             Map<String, Object> instructionPayload,
             String deliveryChannel,
             String deliveryDestination,
@@ -236,6 +241,16 @@ public class SchedulingIntentService {
         }
         requirePublishableBackfillItem(context.backfillItem());
 
+        InputSnapshotEvidenceService.InputEvidenceEvaluation inputEvidence =
+                inputSnapshotEvidenceService.evaluate(task);
+        if (!inputEvidence.satisfied()) {
+            throw new IllegalStateException(
+                    "Scheduling intent input evidence is incomplete: " + inputEvidence.waitingReason());
+        }
+        List<Map<String, Object>> inputSnapshotVector = inputEvidence.evidence().stream()
+                .map(io.github.lakehouseflow.model.InputSnapshotEvidence::toPayload)
+                .toList();
+
         FlowPlanPolicyService.EffectivePolicy effectivePolicy = context.effectivePolicy();
         requireVersionConcurrencyAdmission(context, effectivePolicy);
         String selectedChannel = requireDeliveryChannel();
@@ -269,6 +284,8 @@ public class SchedulingIntentService {
                 context.backfillItem(),
                 targetAssetKey,
                 baselineSnapshotId,
+                inputEvidence.processingMode(),
+                inputSnapshotVector,
                 admission.expiresAt(),
                 effectivePolicy,
                 now);
@@ -291,6 +308,8 @@ public class SchedulingIntentService {
                 .bizDate(task.getBizDate())
                 .targetAssetKey(targetAssetKey)
                 .baselineSnapshotId(baselineSnapshotId)
+                .processingMode(inputEvidence.processingMode())
+                .inputSnapshotVectorJson(inputSnapshotVector)
                 .instructionPayloadJson(instructionPayload)
                 .createdAt(now)
                 .build());
@@ -501,6 +520,8 @@ public class SchedulingIntentService {
                 intent.getBizDate(),
                 intent.getTargetAssetKey(),
                 intent.getBaselineSnapshotId(),
+                intent.getProcessingMode(),
+                intent.getInputSnapshotVectorJson(),
                 intent.getInstructionPayloadJson(),
                 delivery.getChannel(),
                 delivery.getDestination(),
@@ -552,6 +573,8 @@ public class SchedulingIntentService {
      * @param backfillItem owning backfill item, or null
      * @param targetAssetKey resolved target asset key
      * @param baselineSnapshotId snapshot frozen before publication, or null
+     * @param processingMode engine-neutral STREAMING or BATCH mode
+     * @param inputSnapshotVector complete parent and external input evidence
      * @param admissionExpiresAt latest time at which downstream may start this intent
      * @param effectivePolicy frozen policy values used for scheduler decisions
      * @param issuedAt time at which the immutable instruction was created
@@ -564,6 +587,8 @@ public class SchedulingIntentService {
             BackfillItem backfillItem,
             String targetAssetKey,
             String baselineSnapshotId,
+            String processingMode,
+            List<Map<String, Object>> inputSnapshotVector,
             LocalDateTime admissionExpiresAt,
             FlowPlanPolicyService.EffectivePolicy effectivePolicy,
             LocalDateTime issuedAt) {
@@ -626,14 +651,20 @@ public class SchedulingIntentService {
                         ? null
                         : effectivePolicy.maxActiveInstances());
 
+        Map<String, Object> processing = new LinkedHashMap<>();
+        processing.put("processingMode", processingMode);
+        processing.put("inputSnapshotVector", inputSnapshotVector);
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION);
         payload.put("source", SnapshotEvidenceContract.INTENT_SOURCE);
+        payload.put("intentKind", "DATA_PROCESSING");
         payload.put("intentKey", intentKey);
         payload.put("issuedAt", issuedAt.toString());
         payload.put("identity", identity);
         payload.put("definition", definition);
         payload.put("schedule", schedule);
+        payload.put("processing", processing);
         payload.put("schedulingPolicy", schedulingPolicy);
         payload.put("publicationAdmission", publicationAdmission);
         payload.put("snapshotEvidence", snapshotEvidence);

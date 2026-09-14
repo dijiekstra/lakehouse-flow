@@ -269,9 +269,9 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 
 ## 下一步建议
 
-1. 先完成 source-aware snapshot 超时判定，避免 source 缺口被误判为 `SNAPSHOT_NOT_ADVANCED`。
-2. 增加 `tableAssetKey -> writerJobKey` 唯一绑定、writer epoch，以及不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)` 与可靠投递。
-3. 为节点补齐引擎无关的 `processingMode=STREAMING|BATCH`，把 DAG 门禁升级为流式资产证据与批式同实例确认证据组成的 input snapshot/watermark vector，再实现 Flink/Paimon 参考 writer-side adapter。
+1. G16 source-aware snapshot 超时判定与 G19 流批混合 input snapshot/watermark vector 已完成代码和单测。
+2. 下一步增加 `tableAssetKey -> writerJobKey` 唯一绑定、writer epoch，以及不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)` 与可靠投递。
+3. 实现 Flink/Paimon 参考 writer-side adapter，让流式 checkpoint 与批式结束提交都能写入可归因的 intent 和 writer epoch 属性。
 4. 打通业务库、Flink CDC 流式 ODS、平台作业启动/重启、DWD/DWS/ADS 混合流批 DAG、DB/HTTP、真实 Paimon、重跑和补数的整体 E2E。
 5. 完成 PostgreSQL 多 scheduler 锁竞争、中断、claim 重占、fencing、事务回滚和 offset 恢复验收。
 6. 补齐阻塞原因和 source 对账的最小运维 API，随后冻结 1.0 REST、intent 和 migration 契约。

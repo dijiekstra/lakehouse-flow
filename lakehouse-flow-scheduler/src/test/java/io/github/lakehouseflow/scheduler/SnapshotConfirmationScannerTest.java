@@ -53,6 +53,9 @@ class SnapshotConfirmationScannerTest {
                         SchedulingStates.SNAPSHOT_CONFIRMED,
                         true,
                         false,
+                        null,
+                        null,
+                        null,
                         null)));
 
         snapshotConfirmationScanner.scanScheduledTasks();

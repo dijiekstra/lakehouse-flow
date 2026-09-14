@@ -36,14 +36,29 @@ public class FlowPlanConditionService {
      * @return aggregate condition result
      */
     public EvaluationResult evaluate(Map<String, Object> rawSpec, LocalDate bizDate) {
+        return evaluateWithEvidence(rawSpec, bizDate).aggregate();
+    }
+
+    /**
+     * Evaluate a dependency specification once and retain satisfied asset evidence for intent freezing.
+     *
+     * @param rawSpec persisted dependency JSON
+     * @param bizDate business date used for template resolution
+     * @return aggregate decision and deterministic satisfied condition evidence
+     */
+    DependencyEvaluation evaluateWithEvidence(Map<String, Object> rawSpec, LocalDate bizDate) {
         if (rawSpec == null || rawSpec.isEmpty()) {
-            return EvaluationResult.satisfied("No external asset dependency");
+            return new DependencyEvaluation(
+                    EvaluationResult.satisfied("No external asset dependency"),
+                    List.of());
         }
 
         Map<String, Object> spec = schedulingTemplateResolver.resolveMap(rawSpec, bizDate);
         List<GroupResult> groups = evaluateGroups(spec);
         if (groups.isEmpty()) {
-            return EvaluationResult.unsatisfied("Dependency conditions are empty");
+            return new DependencyEvaluation(
+                    EvaluationResult.unsatisfied("Dependency conditions are empty"),
+                    List.of());
         }
 
         String groupOperator = stringValue(spec.get("groupOperator"), "OR").toUpperCase(Locale.ROOT);
@@ -56,12 +71,22 @@ public class FlowPlanConditionService {
                         .filter(value -> value != null && !value.isBlank())
                         .findFirst()
                         .orElse("FlowPlan input dependency conditions are not satisfied");
-        return EvaluationResult.builder()
+        EvaluationResult aggregate = EvaluationResult.builder()
                 .satisfied(satisfied)
                 .waitingReason(satisfied ? null : reason)
                 .description(reason)
                 .evaluatedAt(System.currentTimeMillis())
                 .build();
+        if (!satisfied) {
+            return new DependencyEvaluation(aggregate, List.of());
+        }
+        List<EvaluationResult> evidence = groups.stream()
+                .filter(group -> "AND".equals(groupOperator) || group.satisfied())
+                .flatMap(group -> group.results().stream())
+                .filter(result -> Boolean.TRUE.equals(result.getSatisfied()))
+                .filter(result -> result.getAssetKey() != null)
+                .toList();
+        return new DependencyEvaluation(aggregate, evidence);
     }
 
     /**
@@ -112,7 +137,7 @@ public class FlowPlanConditionService {
                 .map(condition -> evaluateCondition(DependencyCondition.from(condition, null)))
                 .toList();
         if (results.isEmpty()) {
-            return new GroupResult(false, "Dependency group has no conditions");
+            return new GroupResult(false, "Dependency group has no conditions", List.of());
         }
         boolean satisfied = combine(
                 operator,
@@ -123,7 +148,7 @@ public class FlowPlanConditionService {
                 .filter(value -> value != null && !value.isBlank())
                 .findFirst()
                 .orElse(satisfied ? "Dependency group satisfied" : "Dependency group is not satisfied");
-        return new GroupResult(satisfied, reason);
+        return new GroupResult(satisfied, reason, results);
     }
 
     /**
@@ -212,7 +237,19 @@ public class FlowPlanConditionService {
      *
      * @param satisfied whether the group passed
      * @param reason group evaluation reason
+     * @param results evaluated conditions in definition order
      */
-    private record GroupResult(boolean satisfied, String reason) {
+    private record GroupResult(boolean satisfied, String reason, List<EvaluationResult> results) {
+    }
+
+    /**
+     * Internal aggregate and evidence result shared with mixed-DAG input freezing.
+     *
+     * @param aggregate dependency decision
+     * @param satisfiedEvidence condition evidence that made the decision true
+     */
+    record DependencyEvaluation(
+            EvaluationResult aggregate,
+            List<EvaluationResult> satisfiedEvidence) {
     }
 }

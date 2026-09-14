@@ -3,6 +3,7 @@ package io.github.lakehouseflow.integration.event;
 import io.github.lakehouseflow.dao.AssetStateRepository;
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
 import io.github.lakehouseflow.dao.LakehouseEventRepository;
+import io.github.lakehouseflow.dao.SnapshotSourceHealthRepository;
 import io.github.lakehouseflow.integration.source.LakehouseSnapshotSource;
 import io.github.lakehouseflow.integration.source.LakehouseSnapshotSourceRegistry;
 import io.github.lakehouseflow.integration.source.LakehouseSourceIdentity;
@@ -11,6 +12,7 @@ import io.github.lakehouseflow.integration.source.SnapshotSourcePosition;
 import io.github.lakehouseflow.model.AssetState;
 import io.github.lakehouseflow.model.EventConsumerOffset;
 import io.github.lakehouseflow.model.LakehouseEvent;
+import io.github.lakehouseflow.model.SnapshotSourceHealth;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -60,6 +62,9 @@ class SnapshotSourceReconciliationServiceTest {
     private SnapshotSourceMetrics metrics;
 
     @Mock
+    private SnapshotSourceHealthRepository snapshotSourceHealthRepository;
+
+    @Mock
     private LakehouseSnapshotSource source;
 
     private SnapshotSourceReconciliationService reconciliationService;
@@ -74,8 +79,14 @@ class SnapshotSourceReconciliationServiceTest {
                 assetStateRepository,
                 ingestionService,
                 transactionService,
-                metrics);
+                metrics,
+                snapshotSourceHealthRepository);
         when(source.identity()).thenReturn(IDENTITY);
+        org.mockito.Mockito.lenient().when(snapshotSourceHealthRepository
+                        .findBySourceTypeAndSourceName("PAIMON", "orders"))
+                .thenReturn(Optional.empty());
+        org.mockito.Mockito.lenient().when(snapshotSourceHealthRepository.save(any(SnapshotSourceHealth.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     /** Verify a current offset, event, and AssetState form healthy snapshot evidence. */
@@ -90,6 +101,7 @@ class SnapshotSourceReconciliationServiceTest {
         assertEquals("10", result.latestDataEventSnapshotId());
         assertEquals("10", result.assetStateDataSnapshotId());
         verify(metrics).recordReconciliation(result);
+        verify(snapshotSourceHealthRepository).save(any(SnapshotSourceHealth.class));
     }
 
     /** Verify all-source inspection blocks a retention gap without advancing the offset. */

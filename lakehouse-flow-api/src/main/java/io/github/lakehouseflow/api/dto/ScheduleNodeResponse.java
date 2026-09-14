@@ -12,6 +12,7 @@ import java.util.Map;
  * @param nodeCode stable node code
  * @param nodeName human-readable node name
  * @param nodeType scheduler-side node type
+ * @param processingMode engine-neutral STREAMING or BATCH mode
  * @param dependsOnNodes upstream node codes
  * @param inputDependencySpecJson input asset dependency conditions
  * @param outputAssetKey target asset expected to advance
@@ -26,6 +27,7 @@ public record ScheduleNodeResponse(
         String nodeCode,
         String nodeName,
         String nodeType,
+        String processingMode,
         List<String> dependsOnNodes,
         Map<String, Object> inputDependencySpecJson,
         String outputAssetKey,

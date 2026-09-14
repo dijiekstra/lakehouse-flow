@@ -16,6 +16,7 @@ import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
 import io.github.lakehouseflow.model.BackfillBatch;
 import io.github.lakehouseflow.model.BackfillItem;
 import io.github.lakehouseflow.model.FlowPlanVersion;
+import io.github.lakehouseflow.model.InputSnapshotEvidence;
 import io.github.lakehouseflow.model.SchedulingIntent;
 import io.github.lakehouseflow.model.SchedulingIntentDelivery;
 import io.github.lakehouseflow.model.TaskInstance;
@@ -96,12 +97,18 @@ class SchedulingIntentServiceTest {
     @Mock
     private FlowPlanPolicyService flowPlanPolicyService;
 
+    @Mock
+    private InputSnapshotEvidenceService inputSnapshotEvidenceService;
+
     @InjectMocks
     private SchedulingIntentService schedulingIntentService;
 
     /** Configure generated identifiers for repository saves. */
     @BeforeEach
     void setUpGeneratedIds() {
+        lenient().when(inputSnapshotEvidenceService.evaluate(any(TaskInstance.class)))
+                .thenReturn(new InputSnapshotEvidenceService.InputEvidenceEvaluation(
+                        "BATCH", true, List.of(), null));
         lenient().when(flowPlanVersionRepository.findByIdForUpdate(5L))
                 .thenReturn(Optional.of(FlowPlanVersion.builder().id(5L).build()));
         lenient().when(flowPlanPolicyService.resolve(
@@ -186,6 +193,20 @@ class SchedulingIntentServiceTest {
         WorkflowInstance workflow = workflow(SchedulingStates.READY_TO_SCHEDULE);
         prepareOrdinaryPublication(task, workflow);
         when(snapshotProgressService.findLatestSnapshotId(TARGET_ASSET)).thenReturn(Optional.of("100"));
+        when(inputSnapshotEvidenceService.evaluate(task))
+                .thenReturn(new InputSnapshotEvidenceService.InputEvidenceEvaluation(
+                        "BATCH",
+                        true,
+                        List.of(new InputSnapshotEvidence(
+                                "ods-orders",
+                                "STREAMING",
+                                "ASSET_SNAPSHOT",
+                                "paimon.prod.ods_orders.dt=2026-09-13",
+                                "812",
+                                "2026-09-13T23:59:59",
+                                null,
+                                LocalDateTime.of(2026, 9, 13, 23, 59))),
+                        null));
 
         SchedulingIntentService.TaskSchedulingIntent result =
                 schedulingIntentService.publishTaskIntent(22L);
@@ -195,6 +216,8 @@ class SchedulingIntentServiceTest {
         assertEquals(SnapshotEvidenceContract.CONTRACT_VERSION, result.contractVersion());
         assertEquals("SNAPSHOT", result.triggerType());
         assertEquals("100", result.baselineSnapshotId());
+        assertEquals("BATCH", result.processingMode());
+        assertEquals(1, result.inputSnapshotVector().size());
         assertEquals(SchedulingIntentDeliveryChannels.DATABASE_TABLE, result.deliveryChannel());
         assertEquals(SchedulingIntentDeliveryStatuses.PUBLISHED, result.deliveryStatus());
         verify(taskInstanceService).markScheduled(22L, TARGET_ASSET, "100");
@@ -220,6 +243,8 @@ class SchedulingIntentServiceTest {
         verify(schedulingIntentRepository).save(intentCaptor.capture());
         assertEquals(TARGET_ASSET, intentCaptor.getValue().getTargetAssetKey());
         assertEquals("100", intentCaptor.getValue().getBaselineSnapshotId());
+        assertEquals("BATCH", intentCaptor.getValue().getProcessingMode());
+        assertEquals(1, intentCaptor.getValue().getInputSnapshotVectorJson().size());
         assertEquals(SnapshotEvidenceContract.CONTRACT_VERSION,
                 intentCaptor.getValue().getContractVersion());
         assertRequiredSnapshotProperties(
@@ -228,6 +253,7 @@ class SchedulingIntentServiceTest {
         assertPublicationAdmission(
                 intentCaptor.getValue().getInstructionPayloadJson(),
                 "task-instance:22");
+        assertProcessingBoundary(intentCaptor.getValue().getInstructionPayloadJson());
     }
 
     /** Verify an HTTP route creates pending transport evidence for the internal publisher. */
@@ -336,6 +362,29 @@ class SchedulingIntentServiceTest {
 
         assertThrows(IllegalStateException.class,
                 () -> schedulingIntentService.publishTaskIntent(22L));
+    }
+
+    /** Verify incomplete mixed-DAG evidence cannot acquire admission or enter the outbox. */
+    @Test
+    void publishTaskIntentRejectsIncompleteInputEvidence() {
+        TaskInstance task = task(22L, SchedulingStates.READY_TO_SCHEDULE, TARGET_ASSET);
+        prepareOrdinaryPublication(task, workflow(SchedulingStates.READY_TO_SCHEDULE));
+        when(inputSnapshotEvidenceService.evaluate(task))
+                .thenReturn(new InputSnapshotEvidenceService.InputEvidenceEvaluation(
+                        "BATCH",
+                        false,
+                        List.of(),
+                        "Waiting for streaming parent asset evidence: paimon.prod.ods_orders"));
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> schedulingIntentService.publishTaskIntent(22L));
+
+        assertTrue(error.getMessage().contains("input evidence is incomplete"));
+        verify(schedulingTargetAdmissionService, never()).acquire(
+                any(), any(), anyLong(), anyString(), anyString(), any());
+        verify(snapshotProgressService, never()).findLatestSnapshotId(any());
+        verify(schedulingIntentRepository, never()).save(any());
     }
 
     /** Verify an intent without a managed result asset fails closed. */
@@ -604,6 +653,8 @@ class SchedulingIntentServiceTest {
                 .bizDate(LocalDateTime.of(2026, 9, 13, 0, 0))
                 .targetAssetKey(TARGET_ASSET)
                 .baselineSnapshotId("100")
+                .processingMode("BATCH")
+                .inputSnapshotVectorJson(List.of())
                 .instructionPayloadJson(Map.of("contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION))
                 .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
                 .build();
@@ -637,6 +688,19 @@ class SchedulingIntentServiceTest {
         assertEquals("2026-09-13", admission.get("bizDate"));
         assertEquals(intentKey, admission.get("holderIntentKey"));
         assertTrue(admission.get("leaseExpiresAt") instanceof String);
+    }
+
+    /** Verify downstream receives the engine-neutral mode and complete input vector. */
+    @SuppressWarnings("unchecked")
+    private void assertProcessingBoundary(Map<String, Object> payload) {
+        Map<String, Object> processing = (Map<String, Object>) payload.get("processing");
+        List<Map<String, Object>> vector = (List<Map<String, Object>>) processing.get("inputSnapshotVector");
+
+        assertEquals("DATA_PROCESSING", payload.get("intentKind"));
+        assertEquals("BATCH", processing.get("processingMode"));
+        assertEquals(1, vector.size());
+        assertEquals("ASSET_SNAPSHOT", vector.get(0).get("evidenceSource"));
+        assertEquals("812", vector.get(0).get("snapshotId"));
     }
 
     /** Verify immutable intent payload contains effective scheduler policy evidence. */

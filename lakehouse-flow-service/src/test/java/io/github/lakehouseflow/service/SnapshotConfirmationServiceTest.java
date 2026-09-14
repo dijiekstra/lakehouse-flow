@@ -58,6 +58,9 @@ class SnapshotConfirmationServiceTest {
     @Mock
     private FlowPlanPolicyService flowPlanPolicyService;
 
+    @Mock
+    private SnapshotSourceHealthService snapshotSourceHealthService;
+
     @InjectMocks
     private SnapshotConfirmationService snapshotConfirmationService;
 
@@ -73,6 +76,15 @@ class SnapshotConfirmationServiceTest {
                         invocation.getArgument(2),
                         "PARALLEL",
                         Integer.MAX_VALUE));
+        lenient().when(snapshotSourceHealthService.evaluateTimeoutEvidence(
+                        any(String.class),
+                        any(LocalDateTime.class)))
+                .thenReturn(new SnapshotSourceHealthService.SourceHealthDecision(
+                        "paimon.prod.dwd_orders",
+                        "HEALTHY",
+                        true,
+                        "source caught up",
+                        LocalDateTime.now()));
     }
 
     /**
@@ -153,6 +165,7 @@ class SnapshotConfirmationServiceTest {
         assertFalse(result.snapshotAdvanced());
         assertTrue(result.confirmationExpired());
         assertEquals(SchedulingStates.SNAPSHOT_NOT_ADVANCED, result.resultingState());
+        assertEquals("HEALTHY", result.sourceHealth());
         verify(taskInstanceService).markSnapshotNotAdvanced(
                 TASK_ID,
                 TARGET_ASSET_KEY,
@@ -165,6 +178,44 @@ class SnapshotConfirmationServiceTest {
                 TASK_ID,
                 "SNAPSHOT_CONFIRMATION_EXPIRED");
         verify(dagProgressionService).onSnapshotNotAdvanced(TASK_ID);
+    }
+
+    /** Verify an elapsed window remains pending when source evidence is incomplete. */
+    @Test
+    void keepsTaskScheduledWhenSourceCannotProveCompleteWindow() {
+        TaskInstance task = scheduledTask(LocalDateTime.now().minusHours(2));
+        when(taskInstanceRepository.findById(TASK_ID)).thenReturn(Optional.of(task));
+        SchedulingIntent intent = schedulingIntent();
+        when(schedulingIntentRepository.findByTaskInstanceId(TASK_ID)).thenReturn(Optional.of(intent));
+        when(snapshotEvidenceService.evaluateIntentProgress(intent))
+                .thenReturn(progressResult(false, "100", "Waiting for target snapshot > 100"));
+        when(snapshotSourceHealthService.evaluateTimeoutEvidence(
+                        any(String.class),
+                        any(LocalDateTime.class)))
+                .thenReturn(new SnapshotSourceHealthService.SourceHealthDecision(
+                        "paimon.prod.dwd_orders",
+                        "SOURCE_BLOCKED",
+                        false,
+                        "RETENTION_GAP",
+                        LocalDateTime.now()));
+
+        SnapshotConfirmationResult result = snapshotConfirmationService.checkTaskSnapshotProgress(
+                TASK_ID,
+                Duration.ofHours(1));
+
+        assertFalse(result.confirmationExpired());
+        assertEquals(SchedulingStates.SCHEDULED, result.resultingState());
+        assertEquals("SOURCE_BLOCKED", result.sourceHealth());
+        assertTrue(result.waitingReason().contains("RETENTION_GAP"));
+        verify(taskInstanceService).recordSnapshotCheck(
+                TASK_ID,
+                TARGET_ASSET_KEY,
+                "100",
+                "100",
+                result.waitingReason());
+        verify(taskInstanceService, never()).markSnapshotNotAdvanced(any(), any(), any(), any(), any());
+        verify(schedulingTargetAdmissionService, never()).release(any(), any(), any(), any());
+        verify(dagProgressionService, never()).onSnapshotNotAdvanced(TASK_ID);
     }
 
     /** Verify a node-level timeout overrides the scanner's global fallback. */

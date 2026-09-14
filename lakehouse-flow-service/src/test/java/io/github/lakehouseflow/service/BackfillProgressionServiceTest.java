@@ -56,7 +56,7 @@ class BackfillProgressionServiceTest {
 
         backfillProgressionService.refreshBatch(81L);
 
-        verify(taskInstanceService).markSchedulable(72L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(72L);
         assertEquals(BackfillItemStatuses.INTENT_READY, queued.getStatus());
         verify(backfillItemRepository).save(queued);
         verify(backfillBatchRepository, never()).save(batch);
@@ -88,8 +88,8 @@ class BackfillProgressionServiceTest {
 
         backfillProgressionService.refreshBatch(81L);
 
-        verify(taskInstanceService).markSchedulable(73L);
-        verify(taskInstanceService).markSchedulable(74L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(73L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(74L);
         assertEquals(BackfillItemStatuses.INTENT_READY, queuedOrders.getStatus());
         assertEquals(BackfillItemStatuses.INTENT_READY, queuedPayments.getStatus());
         verify(backfillItemRepository).save(queuedOrders);
@@ -127,7 +127,7 @@ class BackfillProgressionServiceTest {
 
         backfillProgressionService.refreshBatch(81L);
 
-        verify(taskInstanceService).markSchedulable(72L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(72L);
         assertEquals(BackfillItemStatuses.INTENT_READY, queued.getStatus());
     }
 

@@ -1,6 +1,7 @@
 package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.FlowPlanVersionStatuses;
+import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.dao.FlowPlanVersionRepository;
 import io.github.lakehouseflow.dao.ScheduleNodeRepository;
 import io.github.lakehouseflow.model.EvaluationResult;
@@ -52,6 +53,7 @@ public class FlowPlanEvaluationService {
     private final SchedulingTemplateResolver schedulingTemplateResolver;
     private final WorkflowInstanceService workflowInstanceService;
     private final TaskInstanceService taskInstanceService;
+    private final DagProgressionService dagProgressionService;
     private final TriggerHistoryService triggerHistoryService;
     private final FlowPlanDecisionMetrics flowPlanDecisionMetrics;
 
@@ -194,6 +196,21 @@ public class FlowPlanEvaluationService {
                 return outcome;
             }
 
+            boolean hasBatchNode = nodes.stream()
+                    .anyMatch(node -> !ScheduleNodeProcessingModes.isStreaming(node.getProcessingMode()));
+            if (!hasBatchNode) {
+                String reason = "Streaming-only FlowPlan has no per-snapshot scheduling intent";
+                triggerHistoryService.recordSkippedTrigger(
+                        triggerKey,
+                        TRIGGER_TYPE,
+                        assetKey,
+                        snapshotId,
+                        reason);
+                FlowPlanTriggerOutcome outcome = FlowPlanTriggerOutcome.skipped(version, triggerKey, reason);
+                recordDecision(outcome, assetKey, snapshotId, startedAt);
+                return outcome;
+            }
+
             EvaluationResult evaluation = EvaluationResult.builder()
                     .satisfied(true)
                     .assetKey(assetKey)
@@ -212,6 +229,7 @@ public class FlowPlanEvaluationService {
             Set<String> rootCodes = roots.stream().map(ScheduleNode::getNodeCode).collect(Collectors.toSet());
             List<TaskInstance> tasks = emitTasks(version, workflow, nodes, rootCodes, bizDate.toLocalDate());
             workflowInstanceService.markSchedulable(workflow.getId());
+            dagProgressionService.releaseEligibleTasksForWorkflow(workflow.getId());
             triggerHistoryService.recordWorkflowTrigger(triggerKey, TRIGGER_TYPE, evaluation, workflow.getId());
             if (!tasks.isEmpty()) {
                 triggerHistoryService.recordTaskTrigger(
@@ -273,7 +291,9 @@ public class FlowPlanEvaluationService {
             LocalDate bizDate) {
 
         List<TaskInstance> tasks = new ArrayList<>();
-        for (ScheduleNode node : nodes) {
+        for (ScheduleNode node : nodes.stream()
+                .filter(candidate -> !ScheduleNodeProcessingModes.isStreaming(candidate.getProcessingMode()))
+                .toList()) {
             TaskInstance task = taskInstanceService.createInstance(
                     workflow.getId(),
                     node.getNodeCode(),

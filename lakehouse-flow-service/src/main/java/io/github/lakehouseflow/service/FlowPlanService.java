@@ -2,6 +2,7 @@ package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.FlowPlanStatuses;
 import io.github.lakehouseflow.common.FlowPlanVersionStatuses;
+import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.common.ScheduleNodeTypes;
 import io.github.lakehouseflow.dao.FlowPlanRepository;
 import io.github.lakehouseflow.dao.FlowPlanVersionRepository;
@@ -83,6 +84,7 @@ public class FlowPlanService {
      * @param nodeCode stable node code within the version
      * @param nodeName human-readable node name
      * @param nodeType scheduler-side node type
+     * @param processingMode engine-neutral STREAMING or BATCH mode
      * @param dependsOnNodes upstream node codes
      * @param inputDependencySpecJson input asset dependency conditions
      * @param outputAssetKey target asset expected to advance after scheduling
@@ -94,6 +96,7 @@ public class FlowPlanService {
             String nodeCode,
             String nodeName,
             String nodeType,
+            String processingMode,
             List<String> dependsOnNodes,
             Map<String, Object> inputDependencySpecJson,
             String outputAssetKey,
@@ -188,6 +191,7 @@ public class FlowPlanService {
                 .nodeCode(nodeCode)
                 .nodeName(requireText(command.nodeName(), "nodeName"))
                 .nodeType(nodeType)
+                .processingMode(ScheduleNodeProcessingModes.normalize(command.processingMode()))
                 .dependsOnNodes(copyNodeCodes(command.dependsOnNodes()))
                 .inputDependencySpecJson(copyPolicyMap(command.inputDependencySpecJson()))
                 .outputAssetKey(outputAssetKey)

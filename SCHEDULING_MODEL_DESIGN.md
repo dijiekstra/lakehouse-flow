@@ -388,7 +388,7 @@ Lakehouse Flow 参考的 action 只有这些：
 
 建议统一冻结为 `InputSnapshotEvidence`：`parentNodeCode`、`parentProcessingMode`、`assetKey`、`snapshotId`、`watermark`、可选 `upstreamTaskInstanceId` 和 `observedAt`。下游批式节点只有在全部直接父边和自身额外依赖都满足后才创建 SchedulingIntent；下游流式节点自行持续消费这些输入，Lakehouse Flow 不为每次父 snapshot 创建 task intent。
 
-当前 `DagProgressionService.dependenciesConfirmed` 只接受“同一 workflow 的父 task 已确认”，这是纯批式/意图驱动 DAG 的已有实现，不是混合流批 DAG 的最终语义。G19 需要用上述证据向量替代纯 task 状态门禁，同时保留批式父节点的同实例隔离。
+`DagProgressionService` 已使用上述证据向量替代纯 task 状态门禁：普通流式父节点读取资产 snapshot/watermark，批式父节点与 action 回放父节点保留同一 workflow 的 task 确认约束，额外依赖也进入同一冻结向量。
 
 #### OutputAssetSpec
 
@@ -832,7 +832,7 @@ flow_plan_id + version + backfill_batch_id + biz_time + node_scope
 - 已新增 `SchedulingActionService.backfillScheduleNode`，支持按 published `FlowPlanVersion`、起始 `ScheduleNode`、业务日期闭区间和 `NO_CASCADE` / `DIRECT_DOWNSTREAM` / `TRANSITIVE_DOWNSTREAM` 生成 task scheduling intents。
 - 当前 node 补数会为每个业务日期创建 action-owned workflow wrapper；仅选中起点为 READY，范围内其他节点先等待 DAG snapshot 依赖。
 - 当前 node 补数已持久化 `BackfillBatch` 和 `BackfillItem`，可按 actionKey 查询批次，并按 batchId 查询 node/date 明细。
-- 已新增 `DagProgressionService`：当前针对拥有 task instance 的父节点，在目标 snapshot 确认后重算下游，并对缺失或未推进父 task 保持阻塞；流式父节点的资产证据门禁尚待 G19 补齐。
+- 已新增 `DagProgressionService` 和 `InputSnapshotEvidenceService`：目标资产推进后重算同日期下游；普通流式父节点以资产 snapshot/watermark 为证据，批式或 action 回放父节点以同实例确认 task 为证据，缺失或未推进的输入继续阻塞。
 - 已新增 `SnapshotTriggerRoutingService`：补数、恢复和重跑产生的 snapshot 只确认所属 intent 并推进所属 workflow，不再进入全局自然触发通道。
 - 一个物理表 snapshot 会同时投影表级状态和 `changedPartitions` 对应的分区级状态；历史分区补数不能推进当前日期的分区资产键。
 - Lakehouse Flow 标记但不存在 intent、属性不完整、中间提交和维护提交均失败关闭，不产生正常调度实例。

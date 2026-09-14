@@ -3,6 +3,7 @@ package io.github.lakehouseflow.integration.event;
 import io.github.lakehouseflow.dao.AssetStateRepository;
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
 import io.github.lakehouseflow.dao.LakehouseEventRepository;
+import io.github.lakehouseflow.dao.SnapshotSourceHealthRepository;
 import io.github.lakehouseflow.integration.source.LakehouseSnapshotSource;
 import io.github.lakehouseflow.integration.source.LakehouseSnapshotSourceRegistry;
 import io.github.lakehouseflow.integration.source.LakehouseSourceIdentity;
@@ -11,6 +12,7 @@ import io.github.lakehouseflow.integration.source.SnapshotSourcePosition;
 import io.github.lakehouseflow.model.AssetState;
 import io.github.lakehouseflow.model.EventConsumerOffset;
 import io.github.lakehouseflow.model.LakehouseEvent;
+import io.github.lakehouseflow.model.SnapshotSourceHealth;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,6 +40,7 @@ public class SnapshotSourceReconciliationService {
     private final EventIngestionService eventIngestionService;
     private final SnapshotIngestionTransactionService snapshotIngestionTransactionService;
     private final SnapshotSourceMetrics snapshotSourceMetrics;
+    private final SnapshotSourceHealthRepository snapshotSourceHealthRepository;
 
     /**
      * Inspect every configured source without mutating ingestion state.
@@ -74,6 +77,7 @@ public class SnapshotSourceReconciliationService {
     /** Inspect and publish metrics for one source. */
     private SnapshotSourceReconciliation inspectAndRecord(LakehouseSnapshotSource source) {
         SnapshotSourceReconciliation result = inspectSafely(source);
+        persistHealth(result);
         snapshotSourceMetrics.recordReconciliation(result);
         return result;
     }
@@ -118,8 +122,35 @@ public class SnapshotSourceReconciliationService {
                 repairAttempted,
                 repairedEvents,
                 detail);
+        persistHealth(result);
         snapshotSourceMetrics.recordReconciliation(result);
         return result;
+    }
+
+    /** Persist the final table-level reconciliation proof for cross-process confirmation. */
+    private void persistHealth(SnapshotSourceReconciliation result) {
+        LakehouseSourceIdentity identity = result.identity();
+        SnapshotSourceHealth health = snapshotSourceHealthRepository
+                .findBySourceTypeAndSourceName(identity.sourceType(), identity.sourceName())
+                .orElseGet(() -> SnapshotSourceHealth.builder()
+                        .sourceType(identity.sourceType())
+                        .sourceName(identity.sourceName())
+                        .tableAssetKey(identity.assetKey())
+                        .createdAt(LocalDateTime.now())
+                        .build());
+        if (!identity.assetKey().equals(health.getTableAssetKey())) {
+            throw new IllegalStateException(
+                    "Snapshot source identity cannot be rebound from " + health.getTableAssetKey()
+                            + " to " + identity.assetKey());
+        }
+        health.setOutcome(result.outcome().name());
+        health.setOffsetStatus(result.offsetStatus().name());
+        health.setProjectionStatus(result.projectionStatus().name());
+        health.setDurableOffset(result.durableOffset());
+        health.setLatestSourceOffset(result.latestSourceOffset());
+        health.setEvidenceCheckedAt(result.checkedAt());
+        health.setDetail(result.detail());
+        snapshotSourceHealthRepository.save(health);
     }
 
     /** Inspect a source and convert adapter or repository failures into blocked evidence. */

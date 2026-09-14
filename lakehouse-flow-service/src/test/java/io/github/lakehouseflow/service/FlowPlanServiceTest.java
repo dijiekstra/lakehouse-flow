@@ -134,6 +134,7 @@ class FlowPlanServiceTest {
                 "node.dwd_orders",
                 "DWD Orders",
                 ScheduleNodeTypes.ASSET_OUTPUT,
+                "STREAMING",
                 List.of("node.ods_orders", "node.ods_orders", " "),
                 Map.of("assetKey", "paimon.ods.orders"),
                 "paimon.dwd.orders",
@@ -141,6 +142,7 @@ class FlowPlanServiceTest {
                 10));
 
         assertEquals(List.of("node.ods_orders"), result.getDependsOnNodes());
+        assertEquals("STREAMING", result.getProcessingMode());
         assertEquals("paimon.dwd.orders", result.getOutputAssetKey());
         assertEquals("snapshot_advance", result.getConfirmationPolicyJson().get("mode"));
         assertEquals(10, result.getSortOrder());
@@ -162,6 +164,7 @@ class FlowPlanServiceTest {
                         "node.bad",
                         "Bad Node",
                         ScheduleNodeTypes.ASSET_OUTPUT,
+                        "BATCH",
                         List.of(),
                         Map.of(),
                         " ",

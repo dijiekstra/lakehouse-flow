@@ -1,6 +1,7 @@
 package io.github.lakehouseflow.api.dto;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,6 +22,8 @@ import java.util.Map;
  * @param bizDate business date for the scheduling decision
  * @param targetAssetKey managed asset used for snapshot confirmation
  * @param baselineSnapshotId snapshot frozen before publication
+ * @param processingMode engine-neutral STREAMING or BATCH mode
+ * @param inputSnapshotVector complete frozen input evidence
  * @param instructionPayload complete immutable downstream instruction
  * @param deliveryChannel infrastructure transport channel
  * @param deliveryDestination channel-specific destination
@@ -49,6 +52,8 @@ public record TaskSchedulingIntentResponse(
         LocalDateTime bizDate,
         String targetAssetKey,
         String baselineSnapshotId,
+        String processingMode,
+        List<Map<String, Object>> inputSnapshotVector,
         Map<String, Object> instructionPayload,
         String deliveryChannel,
         String deliveryDestination,

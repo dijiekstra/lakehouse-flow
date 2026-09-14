@@ -120,7 +120,7 @@ public class BackfillProgressionService {
                 continue;
             }
             for (BackfillItem entryItem : entryItems) {
-                taskInstanceService.markSchedulable(entryItem.getTaskInstanceId());
+                taskInstanceService.markSchedulableAsActionEntry(entryItem.getTaskInstanceId());
                 entryItem.setStatus(BackfillItemStatuses.INTENT_READY);
                 backfillItemRepository.save(entryItem);
             }

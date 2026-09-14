@@ -1,6 +1,7 @@
 package io.github.lakehouseflow.scheduler;
 
 import io.github.lakehouseflow.model.SnapshotConfirmationResult;
+import io.github.lakehouseflow.common.SnapshotSourceHealthOutcomes;
 import io.github.lakehouseflow.service.SnapshotConfirmationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,9 +48,14 @@ public class SnapshotConfirmationScanner {
         long expired = results.stream()
                 .filter(SnapshotConfirmationResult::confirmationExpired)
                 .count();
-        long waiting = results.size() - confirmed - expired;
+        long sourceBlocked = results.stream()
+                .filter(result -> SnapshotSourceHealthOutcomes.SOURCE_BLOCKED.equals(result.sourceHealth())
+                        || SnapshotSourceHealthOutcomes.REPAIRABLE.equals(result.sourceHealth()))
+                .count();
+        long waiting = results.size() - confirmed - expired - sourceBlocked;
 
-        log.info("Snapshot confirmation scan checked {} scheduled tasks: confirmed={}, waiting={}, expired={}",
-                results.size(), confirmed, waiting, expired);
+        log.info("Snapshot confirmation scan checked {} scheduled tasks: "
+                        + "confirmed={}, waiting={}, sourceBlocked={}, expired={}",
+                results.size(), confirmed, waiting, sourceBlocked, expired);
     }
 }

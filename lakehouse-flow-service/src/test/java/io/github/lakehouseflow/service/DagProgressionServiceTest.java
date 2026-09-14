@@ -3,14 +3,9 @@ package io.github.lakehouseflow.service;
 import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.dao.BackfillItemRepository;
-import io.github.lakehouseflow.dao.FlowPlanVersionRepository;
-import io.github.lakehouseflow.dao.ScheduleNodeRepository;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
 import io.github.lakehouseflow.model.BackfillItem;
-import io.github.lakehouseflow.model.EvaluationResult;
-import io.github.lakehouseflow.model.FlowPlanVersion;
-import io.github.lakehouseflow.model.ScheduleNode;
 import io.github.lakehouseflow.model.TaskInstance;
 import io.github.lakehouseflow.model.WorkflowInstance;
 import org.junit.jupiter.api.Test;
@@ -22,7 +17,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -46,12 +40,6 @@ class DagProgressionServiceTest {
     private WorkflowInstanceRepository workflowInstanceRepository;
 
     @Mock
-    private ScheduleNodeRepository scheduleNodeRepository;
-
-    @Mock
-    private FlowPlanVersionRepository flowPlanVersionRepository;
-
-    @Mock
     private BackfillItemRepository backfillItemRepository;
 
     @Mock
@@ -64,7 +52,7 @@ class DagProgressionServiceTest {
     private WorkflowInstanceService workflowInstanceService;
 
     @Mock
-    private FlowPlanConditionService flowPlanConditionService;
+    private InputSnapshotEvidenceService inputSnapshotEvidenceService;
 
     @InjectMocks
     private DagProgressionService dagProgressionService;
@@ -77,15 +65,8 @@ class DagProgressionServiceTest {
         TaskInstance left = task(71L, 61L, "left", SchedulingStates.SNAPSHOT_CONFIRMED);
         TaskInstance right = task(72L, 62L, "right", SchedulingStates.SNAPSHOT_CONFIRMED);
         TaskInstance downstream = task(73L, 63L, "join", SchedulingStates.WAITING_SNAPSHOT);
-        ScheduleNode leftNode = node(61L, "left", List.of());
-        ScheduleNode rightNode = node(62L, "right", List.of());
-        ScheduleNode join = node(63L, "join", List.of("left", "right"));
-        stubConfirmedProgression(
-                left,
-                List.of(left, right, downstream),
-                List.of(leftNode, rightNode, join));
-        when(flowPlanConditionService.evaluate(Map.of(), BIZ_DATE.toLocalDate()))
-                .thenReturn(EvaluationResult.satisfied());
+        stubConfirmedProgression(left, List.of(left, right, downstream));
+        when(inputSnapshotEvidenceService.evaluate(downstream)).thenReturn(satisfied());
 
         dagProgressionService.onSnapshotConfirmed(71L);
 
@@ -100,13 +81,8 @@ class DagProgressionServiceTest {
         TaskInstance left = task(71L, 61L, "left", SchedulingStates.SNAPSHOT_CONFIRMED);
         TaskInstance right = task(72L, 62L, "right", SchedulingStates.SCHEDULED);
         TaskInstance downstream = task(73L, 63L, "join", SchedulingStates.WAITING_SNAPSHOT);
-        ScheduleNode leftNode = node(61L, "left", List.of());
-        ScheduleNode rightNode = node(62L, "right", List.of());
-        ScheduleNode join = node(63L, "join", List.of("left", "right"));
-        stubConfirmedProgression(
-                left,
-                List.of(left, right, downstream),
-                List.of(leftNode, rightNode, join));
+        stubConfirmedProgression(left, List.of(left, right, downstream));
+        when(inputSnapshotEvidenceService.evaluate(downstream)).thenReturn(blocked());
 
         dagProgressionService.onSnapshotConfirmed(71L);
 
@@ -120,10 +96,8 @@ class DagProgressionServiceTest {
     void onSnapshotConfirmedDoesNotReleaseWhenDeclaredUpstreamIsMissing() {
         TaskInstance upstream = task(71L, 61L, "root", SchedulingStates.SNAPSHOT_CONFIRMED);
         TaskInstance downstream = task(73L, 63L, "join", SchedulingStates.WAITING_SNAPSHOT);
-        ScheduleNode root = node(61L, "root", List.of());
-        ScheduleNode missing = node(62L, "other", List.of());
-        ScheduleNode join = node(63L, "join", List.of("root", "other"));
-        stubConfirmedProgression(upstream, List.of(upstream, downstream), List.of(root, missing, join));
+        stubConfirmedProgression(upstream, List.of(upstream, downstream));
+        when(inputSnapshotEvidenceService.evaluate(downstream)).thenReturn(blocked());
 
         dagProgressionService.onSnapshotConfirmed(71L);
 
@@ -135,28 +109,10 @@ class DagProgressionServiceTest {
      */
     @Test
     void onAssetStateAdvancedReleasesExternallyGatedNode() {
-        Map<String, Object> dependency = Map.of(
-                "type", "SNAPSHOT_ADVANCED",
-                "assetKey", "payments.dt=${bizDate}");
         TaskInstance upstream = task(71L, 61L, "root", SchedulingStates.SNAPSHOT_CONFIRMED);
         TaskInstance downstream = task(72L, 62L, "leaf", SchedulingStates.WAITING_SNAPSHOT);
-        ScheduleNode root = node(61L, "root", List.of());
-        ScheduleNode leaf = node(62L, "leaf", List.of("root"));
-        leaf.setInputDependencySpecJson(dependency);
-        FlowPlanVersion version = version();
         when(taskInstanceRepository.findWaitingForSnapshot()).thenReturn(List.of(downstream));
-        when(flowPlanVersionRepository.findById(51L)).thenReturn(Optional.of(version));
-        when(scheduleNodeRepository.findById(62L)).thenReturn(Optional.of(leaf));
-        when(flowPlanConditionService.referencesAsset(
-                dependency,
-                BIZ_DATE.toLocalDate(),
-                "payments.dt=2026-09-12")).thenReturn(true);
-        when(taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(11L))
-                .thenReturn(List.of(upstream, downstream));
-        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L))
-                .thenReturn(List.of(root, leaf));
-        when(flowPlanConditionService.evaluate(dependency, BIZ_DATE.toLocalDate()))
-                .thenReturn(EvaluationResult.satisfied());
+        when(inputSnapshotEvidenceService.evaluate(downstream)).thenReturn(satisfied());
 
         dagProgressionService.onAssetStateAdvanced("payments.dt=2026-09-12", BIZ_DATE);
 
@@ -168,19 +124,8 @@ class DagProgressionServiceTest {
      */
     @Test
     void onAssetStateAdvancedDoesNotReleaseConcurrencyQueuedStartNode() {
-        Map<String, Object> dependency = Map.of(
-                "type", "SNAPSHOT_ADVANCED",
-                "assetKey", "orders.dt=${bizDate}");
         TaskInstance queued = task(71L, 61L, "root", SchedulingStates.WAITING_SNAPSHOT);
-        ScheduleNode root = node(61L, "root", List.of());
-        root.setInputDependencySpecJson(dependency);
         when(taskInstanceRepository.findWaitingForSnapshot()).thenReturn(List.of(queued));
-        when(flowPlanVersionRepository.findById(51L)).thenReturn(Optional.of(version()));
-        when(scheduleNodeRepository.findById(61L)).thenReturn(Optional.of(root));
-        when(flowPlanConditionService.referencesAsset(
-                dependency,
-                BIZ_DATE.toLocalDate(),
-                "orders.dt=2026-09-12")).thenReturn(true);
         when(backfillItemRepository.findByTaskInstanceId(71L))
                 .thenReturn(Optional.of(BackfillItem.builder()
                         .taskInstanceId(71L)
@@ -190,7 +135,20 @@ class DagProgressionServiceTest {
         dagProgressionService.onAssetStateAdvanced("orders.dt=2026-09-12", BIZ_DATE);
 
         verify(taskInstanceService, never()).markSchedulable(71L);
-        verify(taskInstanceRepository, never()).findByWorkflowInstanceIdOrderByCreatedAtAsc(11L);
+        verify(inputSnapshotEvidenceService, never()).evaluate(queued);
+    }
+
+    /** Verify a newly created workflow immediately checks already available streaming evidence. */
+    @Test
+    void releaseEligibleTasksForWorkflowReleasesSatisfiedWaitingTask() {
+        TaskInstance waiting = task(72L, 62L, "leaf", SchedulingStates.WAITING_SNAPSHOT);
+        when(taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(11L))
+                .thenReturn(List.of(waiting));
+        when(inputSnapshotEvidenceService.evaluate(waiting)).thenReturn(satisfied());
+
+        dagProgressionService.releaseEligibleTasksForWorkflow(11L);
+
+        verify(taskInstanceService).markSchedulable(72L);
     }
 
     /**
@@ -218,16 +176,12 @@ class DagProgressionServiceTest {
      *
      * @param confirmedTask confirmed task
      * @param workflowTasks tasks in the same DAG instance
-     * @param nodes immutable graph nodes
      */
     private void stubConfirmedProgression(
             TaskInstance confirmedTask,
-            List<TaskInstance> workflowTasks,
-            List<ScheduleNode> nodes) {
+            List<TaskInstance> workflowTasks) {
         when(taskInstanceRepository.findById(confirmedTask.getId())).thenReturn(Optional.of(confirmedTask));
         when(taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(11L)).thenReturn(workflowTasks);
-        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L)).thenReturn(nodes);
-        when(flowPlanVersionRepository.findById(51L)).thenReturn(Optional.of(version()));
         when(workflowInstanceRepository.findById(11L))
                 .thenReturn(Optional.of(WorkflowInstance.builder()
                         .id(11L)
@@ -256,33 +210,14 @@ class DagProgressionServiceTest {
                 .build();
     }
 
-    /**
-     * Build a graph node fixture.
-     *
-     * @param id node id
-     * @param code node code
-     * @param dependencies direct upstream codes
-     * @return schedule node fixture
-     */
-    private ScheduleNode node(Long id, String code, List<String> dependencies) {
-        return ScheduleNode.builder()
-                .id(id)
-                .flowPlanVersionId(51L)
-                .nodeCode(code)
-                .dependsOnNodes(dependencies)
-                .inputDependencySpecJson(Map.of())
-                .build();
+    /** Build a satisfied mixed-input decision. */
+    private InputSnapshotEvidenceService.InputEvidenceEvaluation satisfied() {
+        return new InputSnapshotEvidenceService.InputEvidenceEvaluation("BATCH", true, List.of(), null);
     }
 
-    /**
-     * Build an immutable plan version fixture.
-     *
-     * @return plan version fixture
-     */
-    private FlowPlanVersion version() {
-        return FlowPlanVersion.builder()
-                .id(51L)
-                .dependencySpecJson(Map.of())
-                .build();
+    /** Build a blocked mixed-input decision. */
+    private InputSnapshotEvidenceService.InputEvidenceEvaluation blocked() {
+        return new InputSnapshotEvidenceService.InputEvidenceEvaluation(
+                "BATCH", false, List.of(), "Waiting for parent evidence");
     }
 }

@@ -11,6 +11,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
@@ -67,6 +68,38 @@ class FlowPlanConditionServiceTest {
 
         assertTrue(result.getSatisfied());
         verify(conditionEvaluator).evaluateCondition("QUALITY_PASSED", "orders.dt=2026-09-12", null);
+    }
+
+    /** Verify an OR decision freezes evidence only from a branch that actually satisfied it. */
+    @Test
+    void evaluateWithEvidenceExcludesFailedOrBranches() {
+        Map<String, Object> failed = Map.of(
+                "type", "QUALITY_PASSED",
+                "assetKey", "orders.dt=2026-09-12");
+        Map<String, Object> satisfied = Map.of(
+                "type", "SNAPSHOT_EXISTS",
+                "assetKey", "payments.dt=2026-09-12");
+        Map<String, Object> resolved = Map.of(
+                "groupOperator", "OR",
+                "groups", List.of(
+                        Map.of("conditions", List.of(failed)),
+                        Map.of("conditions", List.of(satisfied))));
+        when(schedulingTemplateResolver.resolveMap(resolved, BIZ_DATE)).thenReturn(resolved);
+        when(conditionEvaluator.evaluateCondition("QUALITY_PASSED", "orders.dt=2026-09-12", null))
+                .thenReturn(EvaluationResult.unsatisfied("quality waiting"));
+        when(conditionEvaluator.evaluateCondition("SNAPSHOT_EXISTS", "payments.dt=2026-09-12", null))
+                .thenReturn(EvaluationResult.builder()
+                        .satisfied(true)
+                        .assetKey("payments.dt=2026-09-12")
+                        .snapshotId("44")
+                        .build());
+
+        FlowPlanConditionService.DependencyEvaluation result =
+                flowPlanConditionService.evaluateWithEvidence(resolved, BIZ_DATE);
+
+        assertTrue(result.aggregate().getSatisfied());
+        assertEquals(1, result.satisfiedEvidence().size());
+        assertEquals("payments.dt=2026-09-12", result.satisfiedEvidence().get(0).getAssetKey());
     }
 
     /**

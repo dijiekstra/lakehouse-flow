@@ -112,6 +112,7 @@ class FlowPlanControllerTest {
                         "dwd_orders",
                         "DWD Orders",
                         ScheduleNodeTypes.ASSET_OUTPUT,
+                        "STREAMING",
                         List.of("ods_orders"),
                         Map.of("asset", "paimon.ods.orders"),
                         "paimon.dwd.orders",
@@ -122,6 +123,7 @@ class FlowPlanControllerTest {
                 ArgumentCaptor.forClass(FlowPlanService.CreateScheduleNodeCommand.class);
         verify(flowPlanService).addNode(captor.capture());
         assertEquals(9L, captor.getValue().flowPlanVersionId());
+        assertEquals("STREAMING", captor.getValue().processingMode());
         assertEquals("dwd_orders", response.nodeCode());
         assertEquals("paimon.dwd.orders", response.outputAssetKey());
     }

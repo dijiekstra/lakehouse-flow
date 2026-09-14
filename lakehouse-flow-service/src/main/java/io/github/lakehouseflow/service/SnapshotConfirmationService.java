@@ -38,6 +38,7 @@ public class SnapshotConfirmationService {
     private final DagProgressionService dagProgressionService;
     private final SchedulingTargetAdmissionService schedulingTargetAdmissionService;
     private final FlowPlanPolicyService flowPlanPolicyService;
+    private final SnapshotSourceHealthService snapshotSourceHealthService;
 
     /**
      * Check one scheduled task and update its scheduling-side state when the
@@ -76,6 +77,25 @@ public class SnapshotConfirmationService {
                 : flowPlanPolicyService.resolve(task, confirmationTimeout, confirmationTimeout)
                         .confirmationTimeout();
         if (isConfirmationExpired(task, effectiveTimeout)) {
+            LocalDateTime deadline = confirmationDeadline(task, effectiveTimeout);
+            SnapshotSourceHealthService.SourceHealthDecision sourceDecision =
+                    snapshotSourceHealthService.evaluateTimeoutEvidence(task.getTargetAssetKey(), deadline);
+            if (!sourceDecision.timeoutConclusionAllowed()) {
+                String sourceBlockedReason = sourceBlockedReason(sourceDecision, waitingReason);
+                taskInstanceService.recordSnapshotCheck(
+                        taskId,
+                        task.getTargetAssetKey(),
+                        task.getBaselineSnapshotId(),
+                        observedSnapshotId,
+                        sourceBlockedReason);
+                return SnapshotConfirmationResult.sourceBlocked(
+                        task,
+                        observedSnapshotId,
+                        sourceBlockedReason,
+                        sourceDecision.sourceHealth(),
+                        sourceDecision.detail(),
+                        sourceDecision.evidenceCheckedAt());
+            }
             taskInstanceService.markSnapshotNotAdvanced(
                     taskId,
                     task.getTargetAssetKey(),
@@ -84,7 +104,13 @@ public class SnapshotConfirmationService {
                     waitingReason);
             dagProgressionService.onSnapshotNotAdvanced(taskId);
             releaseTargetAdmission(intent, RELEASE_REASON_EXPIRED);
-            return SnapshotConfirmationResult.expired(task, observedSnapshotId, waitingReason);
+            return SnapshotConfirmationResult.expired(
+                    task,
+                    observedSnapshotId,
+                    waitingReason,
+                    sourceDecision.sourceHealth(),
+                    sourceDecision.detail(),
+                    sourceDecision.evidenceCheckedAt());
         }
 
         taskInstanceService.recordSnapshotCheck(
@@ -143,12 +169,41 @@ public class SnapshotConfirmationService {
      * @return true when the task should be marked as snapshot-not-advanced
      */
     private boolean isConfirmationExpired(TaskInstance task, Duration confirmationTimeout) {
-        if (confirmationTimeout == null || task.getScheduledAt() == null) {
+        LocalDateTime expiresAt = confirmationDeadline(task, confirmationTimeout);
+        if (expiresAt == null) {
             return false;
         }
-
-        LocalDateTime expiresAt = task.getScheduledAt().plus(confirmationTimeout);
         return !LocalDateTime.now().isBefore(expiresAt);
+    }
+
+    /**
+     * Resolve the immutable end of a task's snapshot confirmation window.
+     *
+     * @param task scheduled task
+     * @param confirmationTimeout effective timeout
+     * @return confirmation deadline, or null when timeout is disabled
+     */
+    private LocalDateTime confirmationDeadline(TaskInstance task, Duration confirmationTimeout) {
+        if (confirmationTimeout == null || task.getScheduledAt() == null) {
+            return null;
+        }
+        return task.getScheduledAt().plus(confirmationTimeout);
+    }
+
+    /**
+     * Combine snapshot waiting evidence with the independent source-blocking reason.
+     *
+     * @param sourceDecision persisted source-health decision
+     * @param snapshotWaitingReason current attributable-snapshot waiting reason
+     * @return scheduler-side non-terminal wait explanation
+     */
+    private String sourceBlockedReason(
+            SnapshotSourceHealthService.SourceHealthDecision sourceDecision,
+            String snapshotWaitingReason) {
+        String snapshotDetail = isBlank(snapshotWaitingReason) ? "target snapshot evidence is absent" : snapshotWaitingReason;
+        String sourceDetail = isBlank(sourceDecision.detail()) ? "source evidence is incomplete" : sourceDecision.detail();
+        return "SOURCE_BLOCKED [" + sourceDecision.sourceHealth() + "]: " + sourceDetail
+                + "; snapshot=" + snapshotDetail;
     }
 
     /**

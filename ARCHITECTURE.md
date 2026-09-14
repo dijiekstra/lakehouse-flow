@@ -78,7 +78,7 @@ Lakehouse Flow 必须区分“计算模式”和“调度激活方式”，不�
 - 对补数、重跑等显式数据范围，流式 writer 在处理到冻结输入向量的提交上写入完成属性，批式 writer 在有界范围的最终数据提交上写入完成属性。具体 checkpoint、job-end 或 commit hook 由执行适配器解释，不成为 Flow 字段。
 - `lakehouse-flow.final=true` 是“该 snapshot 已完成本次 intent 的逻辑输入范围”的兼容属性名，不表示执行引擎作业已结束。普通中间提交不得携带它。
 
-因此 Flow 定义只需要冻结 `processingMode`。`STREAMING` 的持续激活和 `BATCH` 的按意图激活由该模式直接派生，不再额外持久化 `activationMode` 或可配置的 `completionBoundary`。运行时数据处理 intent 仍必须冻结完整 input snapshot/watermark vector，然后等待可归因目标 snapshot。流式与批式不得复制两套 DAG、补数、重跑、互斥或结果状态机。当前 Java 模型尚未携带 `processingMode` 和输入向量，这是 `LF-1.0` 的 G19，而不是已完成能力。
+因此 Flow 定义只需要冻结 `processingMode`。`STREAMING` 的持续激活和 `BATCH` 的按意图激活由该模式直接派生，不再额外持久化 `activationMode` 或可配置的 `completionBoundary`。运行时数据处理 intent 冻结完整 input snapshot/watermark vector，然后等待可归因目标 snapshot。流式与批式共享同一套 DAG、补数、重跑、互斥和结果状态机；该 G19 模型已经进入 Java 实现和 `SchedulingIntent` 1.3。
 
 对 `STREAMING` 节点执行补数或重跑时，不把常驻作业重启状态纳入 Lakehouse Flow。Action 派生一个有明确输入向量的数据处理回放意图，可由当前流式 writer 消费，或按单写入者规则受控切换到批式运行，并以新的可归因目标 snapshot 确认。这使普通持续推进和历史回放共享同一个 BackfillBatch、DAG 门禁与 snapshot 结果模型。
 
@@ -155,7 +155,7 @@ writerJobKey  -> one active writerEpoch at a time
 - 下游批式节点只有在全部直接父边证据和自身 `inputDependencySpec` 同时满足后才进入 `READY_TO_SCHEDULE`，并把这些证据统一冻结为 `inputSnapshotVector`。
 - 下游流式节点启动后自行监听所有声明输入的推进，不按每个父 snapshot 重复生成 task intent；Lakehouse Flow 继续观察它的输出供更下游使用。
 
-当前 `DagProgressionService` 只会检查同一 workflow 内父 `TaskInstance.SNAPSHOT_CONFIRMED`，尚不能表达没有逐 snapshot task 的流式父节点。G19 必须把门禁从“父 task 状态集合”提升为“父节点输出 snapshot 证据向量”，同时保留批式父节点的同实例约束。
+当前 `DagProgressionService` 通过 `InputSnapshotEvidenceService` 统一评估混合父边：普通流式父节点读取日期解析后的 `AssetState` 业务 snapshot/watermark，批式或 action 回放父节点要求同一 workflow 内 `TaskInstance.SNAPSHOT_CONFIRMED`。节点自身额外依赖一并进入证据向量，发布前再次校验并冻结，避免 READY 到 outbox 之间的门禁漂移。
 
 ### FlowPlan / FlowPlanVersion / ScheduleNode
 

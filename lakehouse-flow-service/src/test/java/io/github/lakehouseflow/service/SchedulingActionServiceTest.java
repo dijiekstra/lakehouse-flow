@@ -145,7 +145,7 @@ class SchedulingActionServiceTest {
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertEquals(List.of(21L), result.workflowInstanceIds());
         assertEquals(23L, result.taskInstanceId());
-        verify(taskInstanceService).markSchedulable(23L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(23L);
         verify(workflowInstanceService).markSchedulable(21L);
         ArgumentCaptor<SchedulingAction> actionCaptor = ArgumentCaptor.forClass(SchedulingAction.class);
         verify(schedulingActionRepository, times(2)).save(actionCaptor.capture());
@@ -207,7 +207,7 @@ class SchedulingActionServiceTest {
         assertEquals(51L, savedAction.getFlowPlanVersionId());
         assertEquals(61L, savedAction.getScheduleNodeId());
         assertEquals("paimon.prod.dwd_orders", savedAction.getTargetAssetKey());
-        verify(taskInstanceService).markSchedulable(23L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(23L);
         verify(workflowInstanceService).markSchedulable(21L);
     }
 
@@ -277,7 +277,7 @@ class SchedulingActionServiceTest {
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertEquals(List.of(31L), result.workflowInstanceIds());
         assertEquals(32L, result.taskInstanceId());
-        verify(taskInstanceService).markSchedulable(32L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(32L);
         verify(workflowInstanceService).markSchedulable(31L);
     }
 
@@ -361,8 +361,8 @@ class SchedulingActionServiceTest {
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertEquals(List.of(31L, 32L), result.workflowInstanceIds());
         assertEquals(71L, result.taskInstanceId());
-        verify(taskInstanceService).markSchedulable(71L);
-        verify(taskInstanceService).markSchedulable(72L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(71L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(72L);
         verify(workflowInstanceService).markSchedulable(31L);
         verify(workflowInstanceService).markSchedulable(32L);
 
@@ -432,8 +432,8 @@ class SchedulingActionServiceTest {
 
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertEquals(List.of(31L, 32L), result.workflowInstanceIds());
-        verify(taskInstanceService).markSchedulable(71L);
-        verify(taskInstanceService).markSchedulable(72L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(71L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(72L);
         verify(taskInstanceService).markWaitingForSnapshot(eq(73L), contains("node.ods_orders,node.ods_payments"));
         verify(taskInstanceService).markWaitingForSnapshot(eq(74L), contains("Waiting for backfill date slot"));
         verify(taskInstanceService).markWaitingForSnapshot(eq(75L), contains("Waiting for backfill date slot"));
@@ -573,7 +573,7 @@ class SchedulingActionServiceTest {
         assertEquals(List.of(41L, 42L), result.workflowInstanceIds());
         assertEquals(71L, result.taskInstanceId());
         assertTrue(result.message().contains("taskIntents=4"));
-        verify(taskInstanceService, times(2)).markSchedulable(anyLong());
+        verify(taskInstanceService, times(2)).markSchedulableAsActionEntry(anyLong());
         verify(taskInstanceService, times(2)).markWaitingForSnapshot(anyLong(), any());
         assertExpandedBatch(2, 4);
         assertBackfillItemsSaved(4, 2, 2);
@@ -646,7 +646,7 @@ class SchedulingActionServiceTest {
                 "serial repair");
 
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
-        verify(taskInstanceService).markSchedulable(71L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(71L);
         verify(taskInstanceService).markWaitingForSnapshot(eq(72L), contains("Waiting for backfill date slot"));
 
         ArgumentCaptor<BackfillBatch> batchCaptor = ArgumentCaptor.forClass(BackfillBatch.class);
@@ -732,7 +732,7 @@ class SchedulingActionServiceTest {
         assertEquals(List.of(45L), result.workflowInstanceIds());
         assertEquals(81L, result.taskInstanceId());
         assertTrue(result.message().contains("skippedDates=1"));
-        verify(taskInstanceService).markSchedulable(81L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(81L);
         verify(taskInstanceService).markWaitingForSnapshot(eq(82L), contains("node.dwd_orders"));
         verify(workflowInstanceService, never()).createInstance(
                 eq("flow.orders"), eq(4), eq(confirmedDate.atStartOfDay()),
@@ -912,7 +912,7 @@ class SchedulingActionServiceTest {
         assertEquals(75L, result.taskInstanceId());
         assertTrue(result.message().contains("nodes=3"));
         assertTrue(result.message().contains("taskIntents=3"));
-        verify(taskInstanceService).markSchedulable(75L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(75L);
         verify(taskInstanceService, times(2)).markWaitingForSnapshot(anyLong(), any());
         assertExpandedBatch(1, 3);
         assertBackfillItemsSaved(3, 1, 2);
@@ -1053,7 +1053,7 @@ class SchedulingActionServiceTest {
         assertTrue(result.message().contains("sourceBatch=81"));
         assertTrue(result.message().contains("replacementBatch=82"));
         assertEquals(BackfillBatchStatuses.FAILED, sourceBatch.getStatus());
-        verify(taskInstanceService).markSchedulable(75L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(75L);
         verify(taskInstanceService).markWaitingForSnapshot(eq(77L), contains("Waiting for backfill date slot"));
         verify(taskInstanceService).markWaitingForSnapshot(eq(76L), contains("node.dwd_orders"));
         verify(taskInstanceService).markWaitingForSnapshot(eq(78L), contains("node.dwd_orders"));
@@ -1152,7 +1152,7 @@ class SchedulingActionServiceTest {
 
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertTrue(result.message().contains("strategy=FAILED_NODE_CASCADE"));
-        verify(taskInstanceService).markSchedulable(75L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(75L);
         verify(taskInstanceService).markWaitingForSnapshot(76L, "Waiting for upstream snapshot confirmation: node.dwd_orders");
         verify(taskInstanceService, never()).createInstance(
                 anyLong(), eq("node.ods_orders"), eq(4), any(), any(), eq(51L), eq(61L));
@@ -1328,8 +1328,8 @@ class SchedulingActionServiceTest {
 
         assertEquals(SchedulingActionStatuses.APPLIED, result.status());
         assertEquals(List.of(43L), result.workflowInstanceIds());
-        verify(taskInstanceService).markSchedulable(75L);
-        verify(taskInstanceService).markSchedulable(76L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(75L);
+        verify(taskInstanceService).markSchedulableAsActionEntry(76L);
         verify(taskInstanceService).markWaitingForSnapshot(eq(77L), contains("node.ods_orders,node.ods_payments"));
 
         ArgumentCaptor<BackfillBatch> batchCaptor = ArgumentCaptor.forClass(BackfillBatch.class);
@@ -1616,6 +1616,9 @@ class SchedulingActionServiceTest {
                         SchedulingStates.SNAPSHOT_CONFIRMED,
                         true,
                         false,
+                        null,
+                        null,
+                        null,
                         null));
 
         SchedulingActionResult result = schedulingActionService.recheckTaskSnapshot(

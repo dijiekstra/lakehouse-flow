@@ -1,6 +1,7 @@
 package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.FlowPlanVersionStatuses;
+import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.dao.FlowPlanVersionRepository;
 import io.github.lakehouseflow.dao.ScheduleNodeRepository;
@@ -63,6 +64,9 @@ class FlowPlanEvaluationServiceTest {
 
     @Mock
     private TaskInstanceService taskInstanceService;
+
+    @Mock
+    private DagProgressionService dagProgressionService;
 
     @Mock
     private TriggerHistoryService triggerHistoryService;
@@ -291,6 +295,71 @@ class FlowPlanEvaluationServiceTest {
         verify(flowPlanDecisionMetrics).recordDecision(
                 eq(FlowPlanTriggerDecision.FAILED),
                 any(Duration.class));
+    }
+
+    /** Verify ordinary mixed-DAG evaluation emits only batch task intents. */
+    @Test
+    void evaluateTriggeredAssetOmitsContinuousStreamingTask() {
+        FlowPlanVersion version = version(Map.of());
+        ScheduleNode stream = node(61L, "orders-stream", List.of(), rootDependency(), "dwd.dt=${bizDate}");
+        stream.setProcessingMode(ScheduleNodeProcessingModes.STREAMING);
+        ScheduleNode batch = node(62L, "orders-daily", List.of("orders-stream"), Map.of(), "ads.dt=${bizDate}");
+        WorkflowInstance workflow = WorkflowInstance.builder().id(11L).build();
+        TaskInstance batchTask = TaskInstance.builder().id(72L).build();
+        when(flowPlanVersionRepository.findByStatusOrderByUpdatedAtAsc(FlowPlanVersionStatuses.PUBLISHED))
+                .thenReturn(List.of(version));
+        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L))
+                .thenReturn(List.of(stream, batch));
+        when(flowPlanGraphService.validateAndOrder(List.of(stream, batch))).thenReturn(List.of(stream, batch));
+        when(flowPlanConditionService.referencesAsset(rootDependency(), BIZ_DATE.toLocalDate(), ASSET))
+                .thenReturn(true);
+        when(triggerHistoryService.findByTriggerKey(anyString())).thenReturn(Optional.empty());
+        when(flowPlanConditionService.evaluate(rootDependency(), BIZ_DATE.toLocalDate()))
+                .thenReturn(EvaluationResult.satisfied());
+        when(workflowInstanceService.createInstance(
+                eq("flow.orders"), eq(4), eq(BIZ_DATE), eq("SNAPSHOT_DRIVEN"),
+                anyString(), anyString(), eq(51L))).thenReturn(workflow);
+        when(schedulingTemplateResolver.resolve("ads.dt=${bizDate}", BIZ_DATE.toLocalDate()))
+                .thenReturn("ads.dt=2026-09-12");
+        when(taskInstanceService.createInstance(
+                11L, "orders-daily", 4, BIZ_DATE.toLocalDate().atStartOfDay(),
+                "ads.dt=2026-09-12", 51L, 62L)).thenReturn(batchTask);
+
+        List<FlowPlanEvaluationService.FlowPlanTriggerOutcome> results =
+                flowPlanEvaluationService.evaluateTriggeredAsset(ASSET, "101", BIZ_DATE);
+
+        assertTrue(results.get(0).schedulingIntentEmitted());
+        verify(taskInstanceService, times(1)).createInstance(any(), any(), any(), any(), any(), any(), any());
+        verify(taskInstanceService).markWaitingForSnapshot(
+                72L,
+                "Waiting for upstream snapshot confirmation: orders-stream");
+        verify(dagProgressionService).releaseEligibleTasksForWorkflow(11L);
+    }
+
+    /** Verify a streaming-only plan observes assets without creating task or workflow instances. */
+    @Test
+    void evaluateTriggeredAssetDoesNotCreatePerSnapshotIntentForStreamingOnlyPlan() {
+        FlowPlanVersion version = version(Map.of());
+        ScheduleNode stream = node(61L, "orders-stream", List.of(), rootDependency(), "dwd.dt=${bizDate}");
+        stream.setProcessingMode(ScheduleNodeProcessingModes.STREAMING);
+        when(flowPlanVersionRepository.findByStatusOrderByUpdatedAtAsc(FlowPlanVersionStatuses.PUBLISHED))
+                .thenReturn(List.of(version));
+        when(scheduleNodeRepository.findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(51L))
+                .thenReturn(List.of(stream));
+        when(flowPlanGraphService.validateAndOrder(List.of(stream))).thenReturn(List.of(stream));
+        when(flowPlanConditionService.referencesAsset(rootDependency(), BIZ_DATE.toLocalDate(), ASSET))
+                .thenReturn(true);
+        when(triggerHistoryService.findByTriggerKey(anyString())).thenReturn(Optional.empty());
+        when(flowPlanConditionService.evaluate(rootDependency(), BIZ_DATE.toLocalDate()))
+                .thenReturn(EvaluationResult.satisfied());
+
+        List<FlowPlanEvaluationService.FlowPlanTriggerOutcome> results =
+                flowPlanEvaluationService.evaluateTriggeredAsset(ASSET, "101", BIZ_DATE);
+
+        assertFalse(results.get(0).schedulingIntentEmitted());
+        assertTrue(results.get(0).reason().contains("Streaming-only"));
+        verify(workflowInstanceService, never()).createInstance(any(), any(), any(), any(), any(), any(), any());
+        verify(taskInstanceService, never()).createInstance(any(), any(), any(), any(), any(), any(), any());
     }
 
     /**

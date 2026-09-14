@@ -17,6 +17,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -105,6 +106,15 @@ public class SchedulingIntent {
     @Column(name = "baseline_snapshot_id", updatable = false, length = 255)
     private String baselineSnapshotId;
 
+    /** Engine-neutral STREAMING or BATCH mode frozen from the published node. */
+    @Column(name = "processing_mode", nullable = false, updatable = false, length = 32)
+    private String processingMode;
+
+    /** Complete parent and external input evidence frozen at publication time. */
+    @Column(name = "input_snapshot_vector_json", nullable = false, updatable = false, columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private List<Map<String, Object>> inputSnapshotVectorJson;
+
     /**
      * Complete versioned instruction consumed identically by database, HTTP,
      * and MQ delivery channels.
@@ -120,6 +130,9 @@ public class SchedulingIntent {
     /** Initialize the immutable creation timestamp before insert. */
     @PrePersist
     protected void onCreate() {
+        if (inputSnapshotVectorJson == null) {
+            inputSnapshotVectorJson = List.of();
+        }
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
         }

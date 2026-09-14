@@ -59,6 +59,8 @@ public class SchedulingIntentController {
                 intent.bizDate(),
                 intent.targetAssetKey(),
                 intent.baselineSnapshotId(),
+                intent.processingMode(),
+                intent.inputSnapshotVector(),
                 intent.instructionPayload(),
                 intent.deliveryChannel(),
                 intent.deliveryDestination(),

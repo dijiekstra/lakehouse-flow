@@ -1,6 +1,7 @@
 package io.github.lakehouseflow.service;
 
 import io.github.lakehouseflow.common.BackfillCascadePolicies;
+import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.model.ScheduleNode;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +33,7 @@ public class FlowPlanGraphService {
         }
 
         Map<String, ScheduleNode> byCode = indexNodes(nodes);
+        nodes.forEach(node -> ScheduleNodeProcessingModes.normalize(node.getProcessingMode()));
         Map<String, Integer> indegrees = new LinkedHashMap<>();
         Map<String, List<String>> downstreamCodes = new HashMap<>();
         byCode.keySet().forEach(code -> indegrees.put(code, 0));

@@ -200,6 +200,19 @@ public class TaskInstanceService {
     }
 
     /**
+     * Mark an explicit action entry as schedulable and preserve its parent-dependency bypass.
+     *
+     * @param taskId task instance selected as the rerun or backfill entry
+     */
+    public void markSchedulableAsActionEntry(Long taskId) {
+        TaskInstance task = taskInstanceRepository.findById(taskId)
+                .orElseThrow(() -> new RuntimeException("Task instance not found: " + taskId));
+        task.setParentDependencyBypassed(true);
+        taskInstanceRepository.save(task);
+        transitionState(taskId, SchedulingStates.READY_TO_SCHEDULE, null);
+    }
+
+    /**
      * Mark that Lakehouse Flow emitted the scheduling decision.
      */
     public void markScheduled(Long taskId) {

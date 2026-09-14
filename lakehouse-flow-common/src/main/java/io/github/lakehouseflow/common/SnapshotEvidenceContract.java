@@ -10,7 +10,7 @@ package io.github.lakehouseflow.common;
 public final class SnapshotEvidenceContract {
 
     /** Current version of the scheduling-intent payload contract. */
-    public static final String CONTRACT_VERSION = "1.2";
+    public static final String CONTRACT_VERSION = "1.3";
 
     /** Producer identity written into every scheduling-intent payload. */
     public static final String INTENT_SOURCE = "LAKEHOUSE_FLOW";

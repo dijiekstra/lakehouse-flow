@@ -2,6 +2,8 @@ package io.github.lakehouseflow.model;
 
 import io.github.lakehouseflow.common.SchedulingStates;
 
+import java.time.LocalDateTime;
+
 /**
  * Immutable outcome of one target snapshot confirmation check.
  */
@@ -13,7 +15,10 @@ public record SnapshotConfirmationResult(
         String resultingState,
         boolean snapshotAdvanced,
         boolean confirmationExpired,
-        String waitingReason) {
+        String waitingReason,
+        String sourceHealth,
+        String sourceHealthDetail,
+        LocalDateTime sourceEvidenceCheckedAt) {
 
     /**
      * Build a result for a task whose target snapshot advanced.
@@ -31,6 +36,9 @@ public record SnapshotConfirmationResult(
                 SchedulingStates.SNAPSHOT_CONFIRMED,
                 true,
                 false,
+                null,
+                null,
+                null,
                 null);
     }
 
@@ -55,7 +63,10 @@ public record SnapshotConfirmationResult(
                 SchedulingStates.SCHEDULED,
                 false,
                 false,
-                waitingReason);
+                waitingReason,
+                null,
+                null,
+                null);
     }
 
     /**
@@ -64,12 +75,18 @@ public record SnapshotConfirmationResult(
      * @param task scheduled task being checked
      * @param observedSnapshotId latest observed target snapshot id
      * @param waitingReason explanation of the missing snapshot progress
+     * @param sourceHealth persisted healthy source outcome
+     * @param sourceHealthDetail source reconciliation detail
+     * @param sourceEvidenceCheckedAt source evidence timestamp
      * @return expired snapshot confirmation result
      */
     public static SnapshotConfirmationResult expired(
             TaskInstance task,
             String observedSnapshotId,
-            String waitingReason) {
+            String waitingReason,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt) {
 
         return new SnapshotConfirmationResult(
                 task.getId(),
@@ -79,6 +96,42 @@ public record SnapshotConfirmationResult(
                 SchedulingStates.SNAPSHOT_NOT_ADVANCED,
                 false,
                 true,
-                waitingReason);
+                waitingReason,
+                sourceHealth,
+                sourceHealthDetail,
+                sourceEvidenceCheckedAt);
+    }
+
+    /**
+     * Build a non-terminal result when the confirmation window elapsed without trustworthy source evidence.
+     *
+     * @param task scheduled task being checked
+     * @param observedSnapshotId latest observed target snapshot id
+     * @param waitingReason source-aware blocking explanation
+     * @param sourceHealth externally visible source status
+     * @param sourceHealthDetail source reconciliation detail
+     * @param sourceEvidenceCheckedAt source evidence timestamp, or null
+     * @return source-blocked snapshot confirmation result
+     */
+    public static SnapshotConfirmationResult sourceBlocked(
+            TaskInstance task,
+            String observedSnapshotId,
+            String waitingReason,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt) {
+
+        return new SnapshotConfirmationResult(
+                task.getId(),
+                task.getTargetAssetKey(),
+                task.getBaselineSnapshotId(),
+                observedSnapshotId,
+                SchedulingStates.SCHEDULED,
+                false,
+                false,
+                waitingReason,
+                sourceHealth,
+                sourceHealthDetail,
+                sourceEvidenceCheckedAt);
     }
 }

@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.model;
 
+import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.common.ScheduleNodeTypes;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -76,6 +77,13 @@ public class ScheduleNode {
     private String nodeType;
 
     /**
+     * Engine-neutral activation model used by DAG scheduling.
+     */
+    @Builder.Default
+    @Column(name = "processing_mode", nullable = false, length = 32)
+    private String processingMode = ScheduleNodeProcessingModes.BATCH;
+
+    /**
      * Upstream node codes within the same FlowPlan version.
      */
     @Column(name = "depends_on_nodes_json", columnDefinition = "JSONB")
@@ -134,6 +142,7 @@ public class ScheduleNode {
      */
     @PrePersist
     protected void onCreate() {
+        processingMode = ScheduleNodeProcessingModes.normalize(processingMode);
         if (dependsOnNodes == null) {
             dependsOnNodes = List.of();
         }
@@ -159,6 +168,7 @@ public class ScheduleNode {
      */
     @PreUpdate
     protected void onUpdate() {
+        processingMode = ScheduleNodeProcessingModes.normalize(processingMode);
         updatedAt = LocalDateTime.now();
     }
 }

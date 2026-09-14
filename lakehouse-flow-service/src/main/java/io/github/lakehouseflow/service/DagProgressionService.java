@@ -3,13 +3,9 @@ package io.github.lakehouseflow.service;
 import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.dao.BackfillItemRepository;
-import io.github.lakehouseflow.dao.FlowPlanVersionRepository;
-import io.github.lakehouseflow.dao.ScheduleNodeRepository;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
 import io.github.lakehouseflow.model.BackfillItem;
-import io.github.lakehouseflow.model.FlowPlanVersion;
-import io.github.lakehouseflow.model.ScheduleNode;
 import io.github.lakehouseflow.model.TaskInstance;
 import io.github.lakehouseflow.model.WorkflowInstance;
 import lombok.RequiredArgsConstructor;
@@ -18,17 +14,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * Releases DAG nodes from scheduler-side snapshot evidence.
  *
- * A downstream node becomes deliverable only after every direct upstream node
- * represented in the same scheduling instance is snapshot-confirmed. A missing
- * upstream instance remains a blocking dependency instead of being assumed ready.
+ * A downstream batch node becomes deliverable only after every direct parent
+ * supplies evidence. Batch and action-owned stream parents use same-instance
+ * confirmed tasks; ordinary stream parents use their output AssetState.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,13 +30,11 @@ public class DagProgressionService {
 
     private final TaskInstanceRepository taskInstanceRepository;
     private final WorkflowInstanceRepository workflowInstanceRepository;
-    private final ScheduleNodeRepository scheduleNodeRepository;
-    private final FlowPlanVersionRepository flowPlanVersionRepository;
     private final BackfillItemRepository backfillItemRepository;
     private final BackfillProgressionService backfillProgressionService;
     private final TaskInstanceService taskInstanceService;
     private final WorkflowInstanceService workflowInstanceService;
-    private final FlowPlanConditionService flowPlanConditionService;
+    private final InputSnapshotEvidenceService inputSnapshotEvidenceService;
 
     /**
      * Re-evaluate waiting DAG nodes whose external asset gate references an
@@ -63,19 +54,25 @@ public class DagProgressionService {
                     || !task.getBizDate().toLocalDate().equals(bizDate.toLocalDate())) {
                 continue;
             }
-            FlowPlanVersion version = flowPlanVersionRepository.findById(task.getFlowPlanVersionId())
-                    .orElseThrow(() -> new IllegalStateException(
-                            "FlowPlanVersion not found: " + task.getFlowPlanVersionId()));
-            ScheduleNode node = scheduleNodeRepository.findById(task.getScheduleNodeId())
-                    .orElseThrow(() -> new IllegalStateException(
-                            "ScheduleNode not found: " + task.getScheduleNodeId()));
-            if (flowPlanConditionService.referencesAsset(
-                    effectiveDependencySpec(version, node),
-                    task.getBizDate().toLocalDate(),
-                    assetKey)) {
-                releaseIfEligible(task, version, node);
-            }
+            releaseIfEligible(task);
         }
+    }
+
+    /**
+     * Re-evaluate every waiting batch task in one newly created scheduling instance.
+     *
+     * <p>This closes the case where a streaming parent had already produced its date-scoped
+     * snapshot before the workflow wrapper was created, so no later event is required to wake it.
+     *
+     * @param workflowInstanceId workflow scheduling instance id
+     */
+    public void releaseEligibleTasksForWorkflow(Long workflowInstanceId) {
+        if (workflowInstanceId == null) {
+            return;
+        }
+        taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(workflowInstanceId).stream()
+                .filter(task -> SchedulingStates.WAITING_SNAPSHOT.equals(task.getState()))
+                .forEach(this::releaseIfEligible);
     }
 
     /**
@@ -122,37 +119,12 @@ public class DagProgressionService {
             return;
         }
 
-        List<TaskInstance> workflowTasks = taskInstanceRepository
-                .findByWorkflowInstanceIdOrderByCreatedAtAsc(confirmedTask.getWorkflowInstanceId());
-        List<ScheduleNode> nodes = scheduleNodeRepository
-                .findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(confirmedTask.getFlowPlanVersionId());
-        FlowPlanVersion version = flowPlanVersionRepository.findById(confirmedTask.getFlowPlanVersionId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "FlowPlanVersion not found: " + confirmedTask.getFlowPlanVersionId()));
-        Map<Long, ScheduleNode> nodesById = nodes.stream()
-                .collect(Collectors.toMap(ScheduleNode::getId, Function.identity()));
-        Map<String, TaskInstance> tasksByNodeCode = workflowTasks.stream()
-                .filter(task -> task.getScheduleNodeId() != null)
-                .filter(task -> nodesById.containsKey(task.getScheduleNodeId()))
-                .collect(Collectors.toMap(
-                        task -> nodesById.get(task.getScheduleNodeId()).getNodeCode(),
-                        Function.identity()));
-
-        for (TaskInstance candidate : workflowTasks) {
+        for (TaskInstance candidate : taskInstanceRepository
+                .findByWorkflowInstanceIdOrderByCreatedAtAsc(confirmedTask.getWorkflowInstanceId())) {
             if (!SchedulingStates.WAITING_SNAPSHOT.equals(candidate.getState())) {
                 continue;
             }
-            if (isWaitingForConcurrency(candidate.getId())) {
-                continue;
-            }
-            ScheduleNode node = nodesById.get(candidate.getScheduleNodeId());
-            if (node != null
-                    && dependenciesConfirmed(node, tasksByNodeCode)
-                    && externalDependenciesConfirmed(version, node, candidate)) {
-                taskInstanceService.markSchedulable(candidate.getId());
-                backfillItemRepository.findByTaskInstanceId(candidate.getId())
-                        .ifPresent(item -> updateItemStatus(item, BackfillItemStatuses.INTENT_READY));
-            }
+            releaseIfEligible(candidate);
         }
     }
 
@@ -160,78 +132,18 @@ public class DagProgressionService {
      * Release one waiting node when both internal DAG and external asset gates pass.
      *
      * @param candidate waiting task scheduling instance
-     * @param version immutable FlowPlan version
-     * @param node candidate node definition
      */
-    private void releaseIfEligible(TaskInstance candidate, FlowPlanVersion version, ScheduleNode node) {
+    private void releaseIfEligible(TaskInstance candidate) {
         if (isWaitingForConcurrency(candidate.getId())) {
             return;
         }
-        List<TaskInstance> workflowTasks = taskInstanceRepository
-                .findByWorkflowInstanceIdOrderByCreatedAtAsc(candidate.getWorkflowInstanceId());
-        List<ScheduleNode> nodes = scheduleNodeRepository
-                .findByFlowPlanVersionIdOrderBySortOrderAscCreatedAtAsc(version.getId());
-        Map<Long, ScheduleNode> nodesById = nodes.stream()
-                .collect(Collectors.toMap(ScheduleNode::getId, Function.identity()));
-        Map<String, TaskInstance> tasksByNodeCode = workflowTasks.stream()
-                .filter(task -> task.getScheduleNodeId() != null)
-                .filter(task -> nodesById.containsKey(task.getScheduleNodeId()))
-                .collect(Collectors.toMap(
-                        task -> nodesById.get(task.getScheduleNodeId()).getNodeCode(),
-                        Function.identity()));
-        if (dependenciesConfirmed(node, tasksByNodeCode)
-                && externalDependenciesConfirmed(version, node, candidate)) {
+        InputSnapshotEvidenceService.InputEvidenceEvaluation evaluation =
+                inputSnapshotEvidenceService.evaluate(candidate);
+        if (evaluation.satisfied()) {
             taskInstanceService.markSchedulable(candidate.getId());
             backfillItemRepository.findByTaskInstanceId(candidate.getId())
                     .ifPresent(item -> updateItemStatus(item, BackfillItemStatuses.INTENT_READY));
         }
-    }
-
-    /**
-     * Check node-level external input gates using current AssetState evidence.
-     *
-     * @param version plan version supplying default dependencies
-     * @param node candidate node
-     * @param task date-scoped task scheduling instance
-     * @return true when all configured external gates allow release
-     */
-    private boolean externalDependenciesConfirmed(
-            FlowPlanVersion version,
-            ScheduleNode node,
-            TaskInstance task) {
-        if (task.getBizDate() == null) {
-            return false;
-        }
-        return Boolean.TRUE.equals(flowPlanConditionService.evaluate(
-                effectiveDependencySpec(version, node),
-                task.getBizDate().toLocalDate()).getSatisfied());
-    }
-
-    /**
-     * Resolve node-level dependencies with version defaults.
-     *
-     * @param version FlowPlan version
-     * @param node schedule node
-     * @return effective dependency specification
-     */
-    private Map<String, Object> effectiveDependencySpec(FlowPlanVersion version, ScheduleNode node) {
-        Map<String, Object> nodeSpec = node.getInputDependencySpecJson();
-        return nodeSpec == null || nodeSpec.isEmpty() ? version.getDependencySpecJson() : nodeSpec;
-    }
-
-    /**
-     * Check all direct upstream nodes inside the immutable FlowPlan graph.
-     *
-     * @param node candidate downstream node
-     * @param tasksByNodeCode tasks present in the same scheduling instance
-     * @return true only when every declared upstream has a confirmed task
-     */
-    private boolean dependenciesConfirmed(ScheduleNode node, Map<String, TaskInstance> tasksByNodeCode) {
-        List<String> dependencies = node.getDependsOnNodes() == null ? List.of() : node.getDependsOnNodes();
-        return dependencies.stream().allMatch(code -> {
-            TaskInstance upstream = tasksByNodeCode.get(code);
-            return upstream != null && SchedulingStates.SNAPSHOT_CONFIRMED.equals(upstream.getState());
-        });
     }
 
     /**

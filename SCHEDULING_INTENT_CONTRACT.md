@@ -1,10 +1,10 @@
 # Outbound Intent 下游契约
 
-**当前 SchedulingIntent 契约版本**: 1.2
-**LF-1.0 目标 SchedulingIntent 契约版本**: 1.3；尚待 G19 实现和 E2E 验证
+**当前 SchedulingIntent 契约版本**: 1.3；G19 已实现，尚待真实 Flink/Paimon 与 DB/HTTP E2E 后冻结
+**LF-1.0 目标 SchedulingIntent 契约版本**: 1.3
 **LF-1.0 目标 JobControlIntent 契约版本**: 1.0；尚待 G20 实现和 E2E 验证
 **适用通道**: Database Outbox、HTTP、MQ
-**LF-1.0 状态**: 目标草案；待 G19、G20、真实 Flink/Paimon 与 DB/HTTP E2E 完成后冻结
+**LF-1.0 状态**: 数据处理契约 1.3 已实现；待 G20、真实 Flink/Paimon 与 DB/HTTP E2E 完成后冻结
 
 ## 1. 契约目标
 

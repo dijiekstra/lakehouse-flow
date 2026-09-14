@@ -170,6 +170,19 @@ class TaskInstanceServiceTest {
         assertEquals("manual cancel", cancelled.getWaitingReason());
     }
 
+    /** Verify an explicit action entry preserves its intentional parent-dependency bypass. */
+    @Test
+    void markSchedulableAsActionEntryPersistsBypassEvidence() {
+        TaskInstance task = task(22L, SchedulingStates.WAITING_SNAPSHOT);
+        when(taskInstanceRepository.findById(22L)).thenReturn(Optional.of(task));
+
+        taskInstanceService.markSchedulableAsActionEntry(22L);
+
+        assertTrue(task.isParentDependencyBypassed());
+        assertEquals(SchedulingStates.READY_TO_SCHEDULE, task.getState());
+        verify(taskInstanceRepository, org.mockito.Mockito.times(2)).save(task);
+    }
+
     /**
      * Verify markScheduled with target asset captures baseline snapshot evidence.
      */
