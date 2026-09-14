@@ -65,6 +65,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -881,12 +882,14 @@ class OrderToGmvE2EIT {
         registry.add(prefix + ".startup-mode", () -> "LATEST");
     }
 
-    /** Create a unique host path that can be bind-mounted at the same path in Docker. */
+    /** Create a bind-mounted host path writable by the non-root Flink container user on Linux. */
     private static Path createWarehouse() {
         try {
             Path target = Path.of("target").toAbsolutePath();
             Files.createDirectories(target);
-            return Files.createTempDirectory(target, "paimon-e2e-");
+            Path warehouse = Files.createTempDirectory(target, "paimon-e2e-");
+            Files.setPosixFilePermissions(warehouse, PosixFilePermissions.fromString("rwxrwxrwx"));
+            return warehouse;
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to create the E2E Paimon warehouse", exception);
         }
