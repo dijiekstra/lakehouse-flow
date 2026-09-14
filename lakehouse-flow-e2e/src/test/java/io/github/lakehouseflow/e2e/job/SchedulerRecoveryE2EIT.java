@@ -58,6 +58,7 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -115,6 +116,7 @@ import static org.awaitility.Awaitility.await;
             "lakehouse-flow.scheduling-backlog.metrics.fixed-delay-ms=3600000",
             "lakehouse-flow.scheduling-intent-delivery.metrics.fixed-delay-ms=3600000"
         })
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class SchedulerRecoveryE2EIT {
 
     private static final Comparator<String> NUMERIC_OFFSET_COMPARATOR =

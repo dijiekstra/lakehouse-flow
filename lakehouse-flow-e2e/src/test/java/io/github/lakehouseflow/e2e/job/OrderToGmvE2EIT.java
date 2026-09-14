@@ -41,6 +41,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -103,6 +104,7 @@ import static org.awaitility.Awaitility.await;
 @SpringBootTest(
         classes = OrderToGmvE2EIT.E2EApplication.class,
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class OrderToGmvE2EIT {
 
     private static final String FLINK_IMAGE = "flink:1.20.3-scala_2.12-java17";
@@ -760,8 +762,11 @@ class OrderToGmvE2EIT {
     }
 
     /** Assert only snapshot evidence closes the job-control and three batch decisions. */
-    private void assertSchedulerSnapshotOutcome(LocalDate businessDate, int expectedRuns) {
+    private void assertSchedulerSnapshotOutcome(LocalDate businessDate, int expectedRuns) throws Exception {
         assertThat(EXECUTION_ENDPOINT.failures()).isEmpty();
+        assertThat(EXECUTION_ENDPOINT.activeWriterFailure())
+                .as("Flink diagnostics; Lakehouse Flow result assertions remain snapshot-only")
+                .isNull();
 
         List<JobControlIntent> controls = jobControlIntentRepository.findAll();
         assertThat(controls).hasSize(expectedRuns);
@@ -1118,6 +1123,33 @@ class OrderToGmvE2EIT {
             }
             throw new IllegalStateException(
                     "Flink job " + jobId + " produced no external checkpoint: " + lastResponse);
+        }
+
+        /** Return a failed active writer's Flink exception for E2E diagnostics only. */
+        private String activeWriterFailure() throws Exception {
+            ExecutionEnvironment activeEnvironment = environment;
+            if (activeEnvironment == null) {
+                return null;
+            }
+            for (Map.Entry<String, String> writerJob : activeWriterJobs.entrySet()) {
+                HttpRequest request = HttpRequest.newBuilder(activeEnvironment.jobManagerRestUri().resolve(
+                                "/jobs/" + writerJob.getValue() + "/exceptions"))
+                        .GET()
+                        .build();
+                HttpResponse<String> response = HTTP_CLIENT.send(
+                        request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                if (response.statusCode() != 200) {
+                    continue;
+                }
+                String rootException = OBJECT_MAPPER.readTree(response.body())
+                        .path("root-exception")
+                        .asText();
+                if (!rootException.isBlank()) {
+                    return writerJob.getKey() + " (" + writerJob.getValue() + "): " + rootException;
+                }
+            }
+            return null;
         }
 
         /** Cancel the old generation and return its retained final source checkpoint. */
