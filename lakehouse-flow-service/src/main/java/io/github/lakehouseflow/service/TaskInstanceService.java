@@ -259,9 +259,21 @@ public class TaskInstanceService {
             String targetAssetKey,
             String baselineSnapshotId,
             String observedSnapshotId,
-            String waitingReason) {
+            String waitingReason,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt) {
 
-        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, waitingReason, true);
+        recordSnapshotEvidence(
+                taskId,
+                targetAssetKey,
+                baselineSnapshotId,
+                observedSnapshotId,
+                waitingReason,
+                sourceHealth,
+                sourceHealthDetail,
+                sourceEvidenceCheckedAt,
+                true);
     }
 
     /**
@@ -273,7 +285,16 @@ public class TaskInstanceService {
             String baselineSnapshotId,
             String observedSnapshotId) {
 
-        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, null, true);
+        recordSnapshotEvidence(
+                taskId,
+                targetAssetKey,
+                baselineSnapshotId,
+                observedSnapshotId,
+                null,
+                null,
+                null,
+                null,
+                true);
         transitionState(taskId, SchedulingStates.SNAPSHOT_CONFIRMED, null);
     }
 
@@ -285,9 +306,21 @@ public class TaskInstanceService {
             String targetAssetKey,
             String baselineSnapshotId,
             String observedSnapshotId,
-            String reason) {
+            String reason,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt) {
 
-        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, observedSnapshotId, reason, true);
+        recordSnapshotEvidence(
+                taskId,
+                targetAssetKey,
+                baselineSnapshotId,
+                observedSnapshotId,
+                reason,
+                sourceHealth,
+                sourceHealthDetail,
+                sourceEvidenceCheckedAt,
+                true);
         transitionState(taskId, SchedulingStates.SNAPSHOT_NOT_ADVANCED, reason);
     }
 
@@ -303,7 +336,16 @@ public class TaskInstanceService {
             String targetAssetKey,
             String baselineSnapshotId) {
 
-        recordSnapshotEvidence(taskId, targetAssetKey, baselineSnapshotId, baselineSnapshotId, null, false);
+        recordSnapshotEvidence(
+                taskId,
+                targetAssetKey,
+                baselineSnapshotId,
+                baselineSnapshotId,
+                null,
+                null,
+                null,
+                null,
+                false);
     }
 
     /**
@@ -314,6 +356,9 @@ public class TaskInstanceService {
      * @param baselineSnapshotId snapshot captured before scheduling
      * @param observedSnapshotId latest snapshot observed during confirmation
      * @param waitingReason reason progress is still pending or failed
+     * @param sourceHealth independent source-health result, or null before timeout evaluation
+     * @param sourceHealthDetail persisted source reconciliation detail, or null
+     * @param sourceEvidenceCheckedAt time the source evidence was checked, or null
      * @param updateCheckTime whether to refresh the last snapshot check timestamp
      */
     private void recordSnapshotEvidence(
@@ -322,6 +367,9 @@ public class TaskInstanceService {
             String baselineSnapshotId,
             String observedSnapshotId,
             String waitingReason,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt,
             boolean updateCheckTime) {
 
         TaskInstance t = taskInstanceRepository.findById(taskId)
@@ -330,6 +378,9 @@ public class TaskInstanceService {
         t.setBaselineSnapshotId(baselineSnapshotId);
         t.setObservedSnapshotId(observedSnapshotId);
         t.setWaitingReason(waitingReason);
+        t.setSourceHealth(sourceHealth);
+        t.setSourceHealthDetail(sourceHealthDetail);
+        t.setSourceEvidenceCheckedAt(sourceEvidenceCheckedAt);
         if (updateCheckTime) {
             t.setLastSnapshotCheckAt(LocalDateTime.now());
         }

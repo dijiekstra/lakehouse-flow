@@ -48,4 +48,38 @@ public interface JobControlIntentDeliveryRepository extends JpaRepository<JobCon
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT delivery FROM JobControlIntentDelivery delivery WHERE delivery.id = :id")
     Optional<JobControlIntentDelivery> findByIdForUpdate(@Param("id") Long id);
+
+    /**
+     * Find latest exhausted job-control deliveries with scoped filters.
+     *
+     * @param status terminal delivery status
+     * @param channel optional selected transport channel
+     * @param flowCode optional Flow whose node output uses the writer table
+     * @param tableAssetKey optional normalized physical table
+     * @param pageable bounded result page
+     * @return newest matching dead-letter rows first
+     */
+    @Query("""
+            SELECT delivery
+            FROM JobControlIntentDelivery delivery, JobControlIntent intent
+            WHERE delivery.jobControlIntentId = intent.id
+              AND delivery.status = :status
+              AND (:channel IS NULL OR delivery.channel = :channel)
+              AND (:tableAssetKey IS NULL OR intent.tableAssetKey = :tableAssetKey)
+              AND (:flowCode IS NULL OR EXISTS (
+                    SELECT node.id
+                    FROM ScheduleNode node, FlowPlanVersion flowVersion
+                    WHERE node.flowPlanVersionId = flowVersion.id
+                      AND flowVersion.flowCode = :flowCode
+                      AND (node.outputAssetKey = intent.tableAssetKey
+                           OR node.outputAssetKey LIKE CONCAT(intent.tableAssetKey, '.%'))
+              ))
+            ORDER BY delivery.deadLetteredAt DESC, delivery.id DESC
+            """)
+    List<JobControlIntentDelivery> findDeadLetters(
+            @Param("status") String status,
+            @Param("channel") String channel,
+            @Param("flowCode") String flowCode,
+            @Param("tableAssetKey") String tableAssetKey,
+            Pageable pageable);
 }

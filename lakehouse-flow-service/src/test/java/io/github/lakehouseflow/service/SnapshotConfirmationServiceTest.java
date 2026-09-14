@@ -36,6 +36,7 @@ class SnapshotConfirmationServiceTest {
 
     private static final Long TASK_ID = 42L;
     private static final String TARGET_ASSET_KEY = "paimon.prod.dwd_orders";
+    private static final LocalDateTime SOURCE_CHECKED_AT = LocalDateTime.of(2026, 9, 13, 2, 0);
 
     @Mock
     private TaskInstanceRepository taskInstanceRepository;
@@ -87,7 +88,7 @@ class SnapshotConfirmationServiceTest {
                         "HEALTHY",
                         true,
                         "source caught up",
-                        LocalDateTime.now()));
+                        SOURCE_CHECKED_AT));
     }
 
     /**
@@ -166,8 +167,12 @@ class SnapshotConfirmationServiceTest {
                 TARGET_ASSET_KEY,
                 "100",
                 "100",
-                "Waiting for target snapshot > 100");
-        verify(taskInstanceService, never()).markSnapshotNotAdvanced(any(), any(), any(), any(), any());
+                "Waiting for target snapshot > 100",
+                null,
+                null,
+                null);
+        verify(taskInstanceService, never()).markSnapshotNotAdvanced(
+                any(), any(), any(), any(), any(), any(), any(), any());
         verify(schedulingTargetAdmissionService, never()).release(any(), any(), any(), any());
     }
 
@@ -196,7 +201,10 @@ class SnapshotConfirmationServiceTest {
                 TARGET_ASSET_KEY,
                 "100",
                 "100",
-                "Waiting for target snapshot > 100");
+                "Waiting for target snapshot > 100",
+                "HEALTHY",
+                "source caught up",
+                SOURCE_CHECKED_AT);
         verify(schedulingTargetAdmissionService).release(
                 TARGET_ASSET_KEY,
                 LocalDateTime.of(2026, 9, 13, 0, 0).toLocalDate(),
@@ -222,7 +230,7 @@ class SnapshotConfirmationServiceTest {
                         "SOURCE_BLOCKED",
                         false,
                         "RETENTION_GAP",
-                        LocalDateTime.now()));
+                        SOURCE_CHECKED_AT));
 
         SnapshotConfirmationResult result = snapshotConfirmationService.checkTaskSnapshotProgress(
                 TASK_ID,
@@ -237,8 +245,12 @@ class SnapshotConfirmationServiceTest {
                 TARGET_ASSET_KEY,
                 "100",
                 "100",
-                result.waitingReason());
-        verify(taskInstanceService, never()).markSnapshotNotAdvanced(any(), any(), any(), any(), any());
+                result.waitingReason(),
+                "SOURCE_BLOCKED",
+                "RETENTION_GAP",
+                SOURCE_CHECKED_AT);
+        verify(taskInstanceService, never()).markSnapshotNotAdvanced(
+                any(), any(), any(), any(), any(), any(), any(), any());
         verify(schedulingTargetAdmissionService, never()).release(any(), any(), any(), any());
         verify(dagProgressionService, never()).onSnapshotNotAdvanced(TASK_ID);
     }
@@ -269,7 +281,10 @@ class SnapshotConfirmationServiceTest {
                 TARGET_ASSET_KEY,
                 "100",
                 "100",
-                "Waiting for attributable snapshot");
+                "Waiting for attributable snapshot",
+                "HEALTHY",
+                "source caught up",
+                SOURCE_CHECKED_AT);
     }
 
     /**

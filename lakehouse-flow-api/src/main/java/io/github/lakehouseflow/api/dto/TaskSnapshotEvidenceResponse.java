@@ -21,6 +21,9 @@ import java.time.LocalDateTime;
  * @param observedSnapshotId snapshot observed by the latest check
  * @param snapshotAdvanced target snapshot progression result, or null before observation
  * @param lastSnapshotCheckAt latest evidence check timestamp
+ * @param sourceHealth independent source-health result supporting the snapshot conclusion
+ * @param sourceHealthDetail source reconciliation detail supporting the conclusion
+ * @param sourceEvidenceCheckedAt time the supporting source evidence was checked
  * @param scheduledAt intent delivery timestamp
  * @param schedulingIntentId immutable published intent id
  * @param schedulingIntentKey scheduler-generated intent idempotency key
@@ -50,6 +53,9 @@ public record TaskSnapshotEvidenceResponse(
         String observedSnapshotId,
         Boolean snapshotAdvanced,
         LocalDateTime lastSnapshotCheckAt,
+        String sourceHealth,
+        String sourceHealthDetail,
+        LocalDateTime sourceEvidenceCheckedAt,
         LocalDateTime scheduledAt,
         Long schedulingIntentId,
         String schedulingIntentKey,

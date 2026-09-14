@@ -1,6 +1,6 @@
 # Lakehouse Flow 文档索引
 
-**最后更新**: 2026-09-13
+**最后更新**: 2026-09-14
 
 ## 文档真源
 
@@ -9,8 +9,9 @@
 1. `PHASE2_PROGRESS.md`：版本目标、优先级、当前完成度、差距和验证快照的唯一真源。
 2. `ARCHITECTURE.md`、`SCHEDULING_MODEL_DESIGN.md`：当前架构与对象模型不变量。
 3. `SCHEDULING_INTENT_CONTRACT.md`：Lakehouse Flow 与下游之间的协议真源。
-4. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
-5. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
+4. `OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`：生产接入、故障处置、数据库升级恢复和数据保留边界。
+5. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
+6. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
 
 如果历史文档与当前文档冲突，必须服从上述当前真源。任何文档都不能把 Lakehouse Flow 描述为任务执行器，也不能使用下游 `RUNNING/SUCCESS/FAILED` 回调代替目标业务 snapshot 推进。
 
@@ -23,6 +24,8 @@
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 架构真源 | 组件、事务、扫描循环、归因与互斥如何协作 |
 | [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | 模型真源 | FlowPlan、Node、实例、action、补数和 DAG 的语义 |
 | [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 协议真源 | 数据处理与作业控制两类出站意图如何投递、幂等，以及目标 snapshot 必须写什么 |
+| [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) | 生产运维手册 | 如何配置投递与 source、启动/重启 writer，以及处置阻塞、死信和补数 |
+| [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md) | 数据库运维策略 | 如何升级、备份、恢复 PostgreSQL，以及哪些数据可以归档清理 |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | 当前开发指南 | 本地环境、代码约束和验证方式 |
 | [QUICKSTART.md](./QUICKSTART.md) | 当前启动指南 | 如何启动 PostgreSQL、构建、运行和排查 |
 | [TECH_STACK.md](./TECH_STACK.md) | 当前技术基线 | 实际依赖、模块边界、已实现与未实现的基础设施 |
@@ -88,11 +91,19 @@
 4. `ARCHITECTURE.md` 的事务、互斥和失败关闭路径
 5. `SCHEDULING_INTENT_CONTRACT.md` 的归因、Flink/Paimon writer 和租约要求
 
+### 生产运维
+
+1. `OPERATIONS_RUNBOOK.md`
+2. `DATABASE_OPERATIONS.md`
+3. `SCHEDULING_INTENT_CONTRACT.md`
+4. `PHASE2_PROGRESS.md`
+
 ## 更新规则
 
 - 版本目标、优先级和完成度只更新 `PHASE2_PROGRESS.md`，其他文档通过链接引用。
 - 架构或对象语义变化必须同步更新对应权威文档和测试。
 - 下游 payload 或归因属性变化必须同步更新 `SCHEDULING_INTENT_CONTRACT.md`。
 - 依赖、模块或构建方式变化必须同步更新 `TECH_STACK.md`、`DEVELOPMENT.md` 或 `QUICKSTART.md`。
+- 投递、source、writer、故障处置或数据库运维规则变化必须同步更新两份生产运维手册。
 - 阶段总结一旦过期，保留内容但在标题后明确标记为历史。
 - 未经过测试或真实环境验证的能力必须写成“未验证”或“未实现”，不得写成“生产就绪”。

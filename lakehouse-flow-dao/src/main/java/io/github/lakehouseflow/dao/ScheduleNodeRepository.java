@@ -37,4 +37,5 @@ public interface ScheduleNodeRepository extends JpaRepository<ScheduleNode, Long
      * @return matching nodes
      */
     List<ScheduleNode> findByOutputAssetKey(String outputAssetKey);
+
 }

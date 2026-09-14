@@ -1,13 +1,12 @@
 package io.github.lakehouseflow.service;
 
+import io.github.lakehouseflow.common.AssetKeys;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
-import io.github.lakehouseflow.dao.SchedulingIntentDeliveryRepository;
-import io.github.lakehouseflow.dao.SchedulingIntentRepository;
-import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
-import io.github.lakehouseflow.model.SchedulingIntent;
-import io.github.lakehouseflow.model.SchedulingIntentDelivery;
-import io.github.lakehouseflow.model.WorkflowInstance;
+import io.github.lakehouseflow.dao.JobControlIntentDeliveryRepository;
+import io.github.lakehouseflow.dao.JobControlIntentRepository;
+import io.github.lakehouseflow.model.JobControlIntent;
+import io.github.lakehouseflow.model.JobControlIntentDelivery;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -15,18 +14,19 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Read-only operational queries for scheduling-intent transport evidence.
+ * Read-only operations queries for job-control intent transport evidence.
  */
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
-public class SchedulingIntentDeliveryQueryService {
+public class JobControlIntentDeliveryQueryService {
 
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 500;
@@ -35,32 +35,28 @@ public class SchedulingIntentDeliveryQueryService {
             SchedulingIntentDeliveryChannels.HTTP,
             SchedulingIntentDeliveryChannels.MQ);
 
-    private final SchedulingIntentDeliveryRepository deliveryRepository;
-    private final SchedulingIntentRepository intentRepository;
-    private final WorkflowInstanceRepository workflowInstanceRepository;
+    private final JobControlIntentDeliveryRepository deliveryRepository;
+    private final JobControlIntentRepository intentRepository;
 
     /**
-     * Find the newest dead-lettered transport records with an optional channel filter.
-     *
-     * <p>These rows represent exhausted delivery only. They must never be presented as downstream
-     * task failures.
+     * Find newest exhausted job-control delivery routes with an optional channel filter.
      *
      * @param channel optional DATABASE_TABLE, HTTP, or MQ filter
      * @param requestedLimit maximum rows, or null for the default
-     * @return newest dead-lettered delivery evidence first
+     * @return newest exhausted transport evidence first
      */
     public List<DeadLetterDelivery> findDeadLetters(String channel, Integer requestedLimit) {
         return findDeadLetters(channel, null, null, requestedLimit);
     }
 
     /**
-     * Find newest exhausted transport records within an optional Flow and target scope.
+     * Find newest exhausted job-control routes within an optional Flow and target scope.
      *
      * @param channel optional DATABASE_TABLE, HTTP, or MQ filter
-     * @param flowCode optional owning workflow or Flow code
-     * @param targetAssetKey optional exact target or physical-table prefix
+     * @param flowCode optional Flow whose node output uses the writer table
+     * @param targetAssetKey optional table or partition target
      * @param requestedLimit maximum rows, or null for the default
-     * @return newest matching exhausted delivery evidence first
+     * @return newest matching exhausted transport evidence first
      */
     public List<DeadLetterDelivery> findDeadLetters(
             String channel,
@@ -69,52 +65,38 @@ public class SchedulingIntentDeliveryQueryService {
             Integer requestedLimit) {
         String normalizedChannel = normalizeChannel(channel);
         int limit = validateLimit(requestedLimit);
-        List<SchedulingIntentDelivery> deliveries = deliveryRepository.findDeadLetters(
+        List<JobControlIntentDelivery> deliveries = deliveryRepository.findDeadLetters(
                         SchedulingIntentDeliveryStatuses.EXHAUSTED,
                         normalizedChannel,
                         normalizeText(flowCode),
-                        normalizeText(targetAssetKey),
+                        normalizeTableAssetKey(targetAssetKey),
                         PageRequest.of(0, limit));
-        Map<Long, SchedulingIntent> intents = intentRepository.findAllById(deliveries.stream()
-                        .map(SchedulingIntentDelivery::getSchedulingIntentId)
+        Map<Long, JobControlIntent> intents = intentRepository.findAllById(deliveries.stream()
+                        .map(JobControlIntentDelivery::getJobControlIntentId)
                         .toList())
                 .stream()
-                .collect(Collectors.toMap(SchedulingIntent::getId, Function.identity()));
-        Map<Long, WorkflowInstance> workflows = workflowInstanceRepository.findAllById(intents.values().stream()
-                        .map(SchedulingIntent::getWorkflowInstanceId)
-                        .distinct()
-                        .toList())
-                .stream()
-                .collect(Collectors.toMap(WorkflowInstance::getId, Function.identity()));
+                .collect(Collectors.toMap(JobControlIntent::getId, Function.identity()));
         return deliveries.stream()
-                .map(delivery -> {
-                    SchedulingIntent intent = intents.get(delivery.getSchedulingIntentId());
-                    WorkflowInstance workflow = intent == null
-                            ? null
-                            : workflows.get(intent.getWorkflowInstanceId());
-                    return toDeadLetter(delivery, intent, workflow);
-                })
+                .map(delivery -> toDeadLetter(delivery, intents.get(delivery.getJobControlIntentId())))
                 .toList();
     }
 
-    /** Convert one delivery and its immutable intent into an operations read model. */
+    /** Convert one delivery and its immutable control instruction into an operations view. */
     private DeadLetterDelivery toDeadLetter(
-            SchedulingIntentDelivery delivery,
-            SchedulingIntent intent,
-            WorkflowInstance workflow) {
+            JobControlIntentDelivery delivery,
+            JobControlIntent intent) {
         if (intent == null) {
             throw new IllegalStateException(
-                    "Scheduling intent not found for delivery: " + delivery.getId());
+                    "Job control intent not found for delivery: " + delivery.getId());
         }
         return new DeadLetterDelivery(
                 delivery.getId(),
                 intent.getId(),
                 intent.getIntentKey(),
-                intent.getTaskInstanceId(),
-                workflow == null ? null : workflow.getWorkflowCode(),
-                intent.getTaskCode(),
-                intent.getTargetAssetKey(),
-                intent.getBizDate(),
+                intent.getWriterJobKey(),
+                intent.getTableAssetKey(),
+                intent.getOperationType(),
+                intent.getWriterEpoch(),
                 delivery.getChannel(),
                 delivery.getDestination(),
                 delivery.getAttemptCount(),
@@ -129,11 +111,21 @@ public class SchedulingIntentDeliveryQueryService {
         if (channel == null || channel.isBlank()) {
             return null;
         }
-        String normalized = channel.trim().toUpperCase(java.util.Locale.ROOT);
+        String normalized = channel.trim().toUpperCase(Locale.ROOT);
         if (!CHANNELS.contains(normalized)) {
-            throw new IllegalArgumentException("Unsupported scheduling intent delivery channel: " + channel);
+            throw new IllegalArgumentException("Unsupported job control delivery channel: " + channel);
         }
         return normalized;
+    }
+
+    /** Normalize a table or partition key to the managed physical table identity. */
+    private String normalizeTableAssetKey(String targetAssetKey) {
+        if (targetAssetKey == null || targetAssetKey.isBlank()) {
+            return null;
+        }
+        return AssetKeys.tableKey(targetAssetKey.trim())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "targetAssetKey must be catalog.database.table[.partition]"));
     }
 
     /** Normalize optional scope text by trimming it. */
@@ -145,39 +137,37 @@ public class SchedulingIntentDeliveryQueryService {
     private int validateLimit(Integer requestedLimit) {
         int limit = requestedLimit == null ? DEFAULT_LIMIT : requestedLimit;
         if (limit <= 0 || limit > MAX_LIMIT) {
-            throw new IllegalArgumentException("dead-letter query limit must be between 1 and " + MAX_LIMIT);
+            throw new IllegalArgumentException("job-control dead-letter query limit must be between 1 and " + MAX_LIMIT);
         }
         return limit;
     }
 
     /**
-     * Read model for one exhausted delivery route.
+     * Read model for one exhausted writer lifecycle delivery.
      *
      * @param deliveryId transport delivery id
-     * @param intentId immutable scheduling intent id
-     * @param intentKey downstream idempotency and snapshot attribution key
-     * @param taskInstanceId task scheduling instance id
-     * @param flowCode owning Flow or workflow code
-     * @param taskCode scheduled node or task code
-     * @param targetAssetKey target asset whose snapshot confirms the intent
-     * @param bizDate business date represented by the intent
+     * @param intentId immutable job-control intent id
+     * @param intentKey writer epoch idempotency and snapshot attribution key
+     * @param writerJobKey stable platform writer key
+     * @param tableAssetKey writer-owned physical table
+     * @param operationType START_JOB or RESTART_JOB
+     * @param writerEpoch selected fenced writer generation
      * @param channel selected transport channel
      * @param destination selected endpoint, topic, or table
      * @param attemptCount infrastructure publication attempts
      * @param lastError latest transport error
      * @param lastAttemptAt latest infrastructure attempt time
-     * @param deliverBefore publication admission deadline
+     * @param deliverBefore operation admission deadline
      * @param deadLetteredAt time the route entered EXHAUSTED
      */
     public record DeadLetterDelivery(
             Long deliveryId,
             Long intentId,
             String intentKey,
-            Long taskInstanceId,
-            String flowCode,
-            String taskCode,
-            String targetAssetKey,
-            LocalDateTime bizDate,
+            String writerJobKey,
+            String tableAssetKey,
+            String operationType,
+            Long writerEpoch,
             String channel,
             String destination,
             Integer attemptCount,

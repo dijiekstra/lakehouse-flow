@@ -25,8 +25,12 @@ spring:
     enabled: true
     schemas: public
     locations: classpath:db/migration
-    baseline-on-migrate: true
+    # Production migration is forward-only. Explicitly opt in only when onboarding
+    # a verified legacy schema whose baseline has been backed up and reviewed.
+    baseline-on-migrate: ${LAKEHOUSE_FLOW_FLYWAY_BASELINE_ON_MIGRATE:false}
     baseline-version: 0
+    validate-on-migrate: true
+    clean-disabled: true
 
 server:
   port: 8080

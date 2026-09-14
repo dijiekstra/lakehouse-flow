@@ -87,6 +87,7 @@ class SchedulingInstanceControllerTest {
         assertEquals(61L, response.getBody().scheduleNodeId());
         assertEquals("paimon.dwd.orders", response.getBody().targetAssetKey());
         assertEquals("101", response.getBody().observedSnapshotId());
+        assertEquals("HEALTHY", response.getBody().sourceHealth());
     }
 
     /**
@@ -144,6 +145,9 @@ class SchedulingInstanceControllerTest {
                 .targetAssetKey("paimon.dwd.orders")
                 .baselineSnapshotId("100")
                 .observedSnapshotId("101")
+                .sourceHealth("HEALTHY")
+                .sourceHealthDetail("source caught up")
+                .sourceEvidenceCheckedAt(NOW)
                 .scheduledAt(NOW)
                 .lastSnapshotCheckAt(NOW)
                 .createdAt(NOW)

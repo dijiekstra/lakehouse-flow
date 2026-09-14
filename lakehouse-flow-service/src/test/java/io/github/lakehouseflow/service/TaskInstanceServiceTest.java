@@ -212,12 +212,18 @@ class TaskInstanceServiceTest {
                 "paimon.prod.dwd_orders",
                 "100",
                 "100",
-                "waiting target");
+                "source unavailable",
+                "SOURCE_BLOCKED",
+                "RETENTION_GAP",
+                BIZ_DATE.plusHours(1));
 
         assertEquals(SchedulingStates.SCHEDULED, task.getState());
         assertEquals("100", task.getBaselineSnapshotId());
         assertEquals("100", task.getObservedSnapshotId());
-        assertEquals("waiting target", task.getWaitingReason());
+        assertEquals("source unavailable", task.getWaitingReason());
+        assertEquals("SOURCE_BLOCKED", task.getSourceHealth());
+        assertEquals("RETENTION_GAP", task.getSourceHealthDetail());
+        assertEquals(BIZ_DATE.plusHours(1), task.getSourceEvidenceCheckedAt());
         assertNotNull(task.getLastSnapshotCheckAt());
     }
 
@@ -253,11 +259,15 @@ class TaskInstanceServiceTest {
                 "paimon.prod.dwd_orders",
                 "100",
                 "100",
-                "target did not advance");
+                "target did not advance",
+                "HEALTHY",
+                "source caught up",
+                BIZ_DATE.plusHours(1));
 
         assertEquals(SchedulingStates.SNAPSHOT_NOT_ADVANCED, task.getState());
         assertEquals("target did not advance", task.getWaitingReason());
         assertEquals("100", task.getObservedSnapshotId());
+        assertEquals("HEALTHY", task.getSourceHealth());
     }
 
     /**

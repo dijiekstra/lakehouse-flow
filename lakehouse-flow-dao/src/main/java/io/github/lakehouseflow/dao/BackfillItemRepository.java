@@ -2,6 +2,7 @@ package io.github.lakehouseflow.dao;
 
 import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.model.BackfillItem;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -74,4 +75,33 @@ public interface BackfillItemRepository extends JpaRepository<BackfillItem, Long
             @Param("taskInstanceIds") Collection<Long> taskInstanceIds,
             @Param("readyItemStatus") String readyItemStatus,
             @Param("activeBatchStatus") String activeBatchStatus);
+
+    /**
+     * Find backfill items blocked by date admission or DAG dependency evidence.
+     *
+     * @param blockerType optional DAG_DEPENDENCY or DATE_CONCURRENCY filter
+     * @param flowCode optional owning Flow code
+     * @param targetAssetKey optional exact target or physical-table prefix
+     * @param pageable bounded result page
+     * @return newest matching blocked items first
+     */
+    @Query("""
+            SELECT item
+            FROM BackfillItem item, BackfillBatch batch
+            WHERE batch.id = item.backfillBatchId
+              AND item.status IN ('WAITING_CONCURRENCY', 'WAITING_DEPENDENCY')
+              AND (:flowCode IS NULL OR batch.workflowCode = :flowCode)
+              AND (:targetAssetKey IS NULL
+                   OR item.targetAssetKey = :targetAssetKey
+                   OR item.targetAssetKey LIKE CONCAT(:targetAssetKey, '.%'))
+              AND (:blockerType IS NULL
+                   OR (:blockerType = 'DATE_CONCURRENCY' AND item.status = 'WAITING_CONCURRENCY')
+                   OR (:blockerType = 'DAG_DEPENDENCY' AND item.status = 'WAITING_DEPENDENCY'))
+            ORDER BY item.updatedAt DESC, item.id DESC
+            """)
+    List<BackfillItem> findOperationalBlockers(
+            @Param("blockerType") String blockerType,
+            @Param("flowCode") String flowCode,
+            @Param("targetAssetKey") String targetAssetKey,
+            Pageable pageable);
 }

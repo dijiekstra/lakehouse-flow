@@ -28,6 +28,10 @@ class SchedulingIntentDeliveryControllerTest {
                         101L,
                         "task-instance:22",
                         22L,
+                        "flow.orders",
+                        "node.dwd_orders",
+                        "lake.dwd.orders",
+                        deadLetteredAt.minusDays(1),
                         "MQ",
                         "flow-intents",
                         8,
@@ -40,6 +44,7 @@ class SchedulingIntentDeliveryControllerTest {
 
         assertEquals(1, responses.size());
         assertEquals("task-instance:22", responses.get(0).intentKey());
+        assertEquals("flow.orders", responses.get(0).flowCode());
         assertEquals(deadLetteredAt, responses.get(0).deadLetteredAt());
     }
 }

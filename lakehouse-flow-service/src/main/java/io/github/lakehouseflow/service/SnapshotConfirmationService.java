@@ -92,7 +92,10 @@ public class SnapshotConfirmationService {
                         task.getTargetAssetKey(),
                         task.getBaselineSnapshotId(),
                         observedSnapshotId,
-                        sourceBlockedReason);
+                        sourceBlockedReason,
+                        sourceDecision.sourceHealth(),
+                        sourceDecision.detail(),
+                        sourceDecision.evidenceCheckedAt());
                 return SnapshotConfirmationResult.sourceBlocked(
                         task,
                         observedSnapshotId,
@@ -106,7 +109,10 @@ public class SnapshotConfirmationService {
                     task.getTargetAssetKey(),
                     task.getBaselineSnapshotId(),
                     observedSnapshotId,
-                    waitingReason);
+                    waitingReason,
+                    sourceDecision.sourceHealth(),
+                    sourceDecision.detail(),
+                    sourceDecision.evidenceCheckedAt());
             dagProgressionService.onSnapshotNotAdvanced(taskId);
             releaseTargetAdmission(intent, RELEASE_REASON_EXPIRED);
             releaseWriterAdmission(intent);
@@ -124,7 +130,10 @@ public class SnapshotConfirmationService {
                 task.getTargetAssetKey(),
                 task.getBaselineSnapshotId(),
                 observedSnapshotId,
-                waitingReason);
+                waitingReason,
+                null,
+                null,
+                null);
         return SnapshotConfirmationResult.waiting(task, observedSnapshotId, waitingReason);
     }
 

@@ -167,6 +167,9 @@ public class SchedulingActionQueryService {
      * @param observedSnapshotId snapshot observed by the latest check
      * @param snapshotAdvanced derived target snapshot progression result, or null before observation
      * @param lastSnapshotCheckAt latest evidence check timestamp
+     * @param sourceHealth independent source-health result supporting the snapshot conclusion
+     * @param sourceHealthDetail source reconciliation detail supporting the conclusion
+     * @param sourceEvidenceCheckedAt time the supporting source evidence was checked
      * @param scheduledAt intent delivery timestamp
      * @param schedulingIntentId immutable published intent id
      * @param schedulingIntentKey scheduler-generated intent idempotency key
@@ -196,6 +199,9 @@ public class SchedulingActionQueryService {
             String observedSnapshotId,
             Boolean snapshotAdvanced,
             LocalDateTime lastSnapshotCheckAt,
+            String sourceHealth,
+            String sourceHealthDetail,
+            LocalDateTime sourceEvidenceCheckedAt,
             LocalDateTime scheduledAt,
             Long schedulingIntentId,
             String schedulingIntentKey,
@@ -536,6 +542,9 @@ public class SchedulingActionQueryService {
                 task.getObservedSnapshotId(),
                 evaluateSnapshotProgress(task),
                 task.getLastSnapshotCheckAt(),
+                task.getSourceHealth(),
+                task.getSourceHealthDetail(),
+                task.getSourceEvidenceCheckedAt(),
                 task.getScheduledAt(),
                 publication == null ? null : publication.intentId(),
                 publication == null ? null : publication.intentKey(),
@@ -595,6 +604,9 @@ public class SchedulingActionQueryService {
                 null,
                 "Linked task scheduling intent is missing",
                 item.getTargetAssetKey(),
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,

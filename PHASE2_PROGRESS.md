@@ -100,7 +100,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 4. `LF1-04` Flink/Paimon writer-side adapter（已完成）：独立 `lakehouse-flow-flink-paimon` 模块统一流式 checkpoint/批式结束提交、完整属性校验和 `WriterEpochFence` SPI；JDBC 实现以 PostgreSQL binding 行锁覆盖整个 Paimon commit，真实旧 epoch 提交已失败关闭。
 5. `LF1-05` 真实业务闭环 E2E（R1 已完成）：已贯穿业务库变更、Flink CDC 流式 ODS、平台 START/RESTART、外部 checkpoint offset 恢复、HTTP intent、DWD/DWS/ADS 批式 DAG、Paimon source、归因、两轮普通推进和 Node 子图补数。其余 action 属于 R2，数据库投递属于 R4。
 6. `LF1-06` 高可用与恢复 E2E（R3 已完成）：真实 PostgreSQL 上的双 scheduler 锁竞争、事务中断、claim/确认恢复、旧 token fencing、至少一次 HTTP 幂等重投和 source offset 单调恢复均已通过。
-7. `LF1-07` 最小运维 API：补齐阻塞原因和 source 对账查询，复用已有死信、action、补数和 snapshot 证据 API，不开发 Web UI。
+7. `LF1-07` 最小运维 API（已完成代码与单测）：增加统一 blockers、持久化 source 对账和 job-control delivery dead-letter 查询；V23 为 task 持久化结构化 source 证据，查询不依赖 `waitingReason` 文本，也不读取下游运行状态。
 8. `LF1-08` 契约冻结：在真实 E2E 反馈结束后冻结 1.0 API、intent contract、migration 兼容策略和下游幂等要求。
 
 ### LF-1.0 未完成项四态清单
@@ -109,16 +109,16 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 
 | 分类 | 编号 | 未完成项 | 当前基础 | 退出标准 |
 |------|------|----------|----------|----------|
-| 开发态 | DEV-1 | 最小运维只读聚合能力 | task/intent、action、补数、snapshot 证据和数据处理 delivery 死信已有独立 API | 增加统一阻塞原因查询、持久化 source 对账查询和 job-control delivery 死信查询；只展示调度、传输和 snapshot 证据，不引入下游运行状态 |
-| 运维态 | OPS-1 | 生产接入与故障处置手册 | README 已有基础配置和结果语义，缺少完整操作流程 | 固化 `DATABASE_TABLE + HTTP`、Paimon source/writer adapter、START/RESTART、死信、`SOURCE_BLOCKED`、补数暂停/恢复和 writer fencing 的配置检查与处置步骤 |
-| 运维态 | OPS-2 | PostgreSQL migration 与数据保留操作策略 | V1-V22 均为前向 Flyway migration，尚未形成正式升级操作约束 | 明确只前进 migration、升级前备份、失败恢复、兼容窗口，以及 event/intent/delivery/audit 表的保留和清理边界 |
-| 观测态 | OBS-1 | Source 与阻塞原因可查询 | source health 已持久化，source/delivery/backlog 指标已存在 | API 可按 source、Flow、目标资产和结果类型查看最新 `HEALTHY/REPAIRABLE/SOURCE_BLOCKED` 证据及阻塞对象，无需登录数据库 |
-| 观测态 | OBS-2 | 两类 intent 的死信与关键告警闭环 | 数据处理 dead-letter API 和 Prometheus 指标已存在，job-control 查询与可执行告警规则不完整 | 数据处理与 job-control 的 `DELIVERY_EXHAUSTED` 均可查；decision failure、source gap、delivery exhausted、READY/SCHEDULED backlog 具备可部署规则和排障证据链接 |
+| 开发态 | DEV-1 | 最小运维只读聚合能力（已完成） | 已增加统一 blockers、持久化 source 对账和两类 delivery 死信 API；task source 结论已由 V23 结构化持久化 | 已达到：支持按 blocker、Flow、目标资产、source 和 source 结果过滤，只展示调度、传输和 snapshot/source 证据，不引入下游运行状态 |
+| 运维态 | OPS-1 | 生产接入与故障处置手册（已完成） | `OPERATIONS_RUNBOOK.md` 已覆盖 `DATABASE_TABLE + HTTP`、Paimon source/writer adapter、START/RESTART、死信、`SOURCE_BLOCKED`、补数控制和 writer fencing | 已达到：配置检查、投产验收、日常巡检、结果语义和禁止操作均有可执行步骤，且不读取下游运行状态 |
+| 运维态 | OPS-2 | PostgreSQL migration 与数据保留操作策略（已完成） | `DATABASE_OPERATIONS.md` 已固定 V1-V23 基线、V23 后 expand/contract 约束、备份恢复、单实例升级和 aggregate 保留边界 | 已达到：migration 只前进，生产关闭 baseline/clean，明确失败恢复和滚动兼容；容量基线前默认不自动删除，禁止破坏 source/intent/audit 证据链 |
+| 观测态 | OBS-1 | Source 与阻塞原因可查询（已完成） | `/api/v1/operations/snapshot-sources` 与 `/blockers` 已支持 source、Flow、目标资产、结果和 blocker 分类过滤 | 已达到：可查看最新 `HEALTHY/REPAIRABLE/SOURCE_BLOCKED` 证据及阻塞对象，无需登录数据库 |
+| 观测态 | OBS-2 | 两类 intent 的死信与关键告警闭环 | 数据处理与 job-control 的 `DELIVERY_EXHAUSTED` 均已有查询 API，Prometheus 指标已存在 | 补齐 decision failure、source gap、delivery exhausted、READY/SCHEDULED backlog 的可部署规则文件和排障证据链接 |
 | 稳定态 | STB-1 | R2 剩余 Action 真实闭环 | Node 子图补数已通过真实 Paimon；其余 action 的模型和 Mockito 单测已完成 | 集中 E2E 验证 workflow/task/node 重跑、完整 Flow 补数和失败恢复继续遵守归因、DAG、baseline 与互斥不变量 |
 | 稳定态 | STB-2 | R4 正式投递验收 | 两类 intent 的 DB/HTTP 实现和正常 HTTP 路径已完成，HTTP ACK 丢失幂等重投已验证 | 集中 E2E 验证两类 intent 的 `DATABASE_TABLE` 无丢失，以及 HTTP 超时、退避、重试耗尽、死信和下游 `intentKey` 幂等 |
 | 稳定态 | STB-3 | R5 结果语义回归 | `SNAPSHOT_CONFIRMED`、`SNAPSHOT_NOT_ADVANCED`、`DELIVERY_EXHAUSTED`、`SOURCE_BLOCKED` 已独立建模 | 集中 E2E 证明四种语义互不覆盖，尤其 delivery 耗尽不代表执行失败、source 缺口不产生未推进结论 |
 | 稳定态 | STB-4 | 流批边界补充验收 | 普通流式 ODS、批式下游和单表单 writer 已验证 | 集中 E2E 补齐流/批父节点汇聚输入向量，以及常驻流目标表补数由当前 epoch 消费或受控 epoch 切换且无第二 writer |
-| 稳定态 | STB-5 | 1.0 契约与兼容策略冻结 | `SchedulingIntent` 1.3、`JobControlIntent` 1.0 和 V22 schema 已实现 | 冻结 REST/payload/schema；增加兼容性回归，明确下游幂等、未知字段、版本升级和 Flyway 只前进规则；最后一次性运行完整 `./mvnw clean verify` |
+| 稳定态 | STB-5 | 1.0 契约与兼容策略冻结 | `SchedulingIntent` 1.3、`JobControlIntent` 1.0 和 V23 schema 已实现 | 冻结 REST/payload/schema；增加兼容性回归，明确下游幂等、未知字段、版本升级和 Flyway 只前进规则；最后一次性运行完整 `./mvnw clean verify` |
 
 不计入 LF-1.0 未完成项：可信身份/RBAC、Iceberg/Hudi、具体 MQ 产品绑定、Web UI、Flow/Node 聚合稳定游标、`SERIAL_DISCARD` / `SERIAL_PRIORITY` / `dedupeWindow` 和补数审批上限，均保持在 1.1+。容量基线依照已确认决策放到真实生产负载采集，也不阻塞 1.0 功能发布。
 
@@ -128,6 +128,8 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 2. 可以使用 `./mvnw -pl <module> -am test` 做更快的定向反馈；不得用跳过测试的编译结果代替开发门槛。
 3. 当 DEV、OPS、OBS 工作收口并进入 STB 最终验收时，再一次性运行完整 `./mvnw clean verify`，覆盖所有 action、正式投递、结果语义和流批边界。
 4. 最近一次完整 E2E 通过记录继续作为有效基线；后续代码在集中验收前只能称为“单元验证通过”，不能宣称新增路径已经系统级验证。
+
+DEV/OPS 最近验证：JDK 17 下 `./mvnw clean verify -DskipITs` 通过，共 385 个单元/启动测试，失败 0、错误 0；H2 application context 完成新增 Spring Data JPQL 的启动解析，并锁定 Flyway 生产安全默认值，Service JaCoCo line 91.34%、branch 68.91%、method 91.42%。整体 Testcontainers E2E 按当前策略未运行，新增路径只能称为开发期验证通过。
 
 ### 容量基线决策
 

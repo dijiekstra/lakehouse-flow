@@ -102,6 +102,9 @@ public class SchedulingInstanceController {
                 task.getObservedSnapshotId(),
                 task.getScheduledAt(),
                 task.getLastSnapshotCheckAt(),
+                task.getSourceHealth(),
+                task.getSourceHealthDetail(),
+                task.getSourceEvidenceCheckedAt(),
                 task.getCreatedAt(),
                 task.getUpdatedAt());
     }

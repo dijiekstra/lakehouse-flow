@@ -20,6 +20,9 @@ import java.time.LocalDateTime;
  * @param observedSnapshotId latest observed target snapshot
  * @param scheduledAt intent emission time
  * @param lastSnapshotCheckAt last snapshot evidence check time
+ * @param sourceHealth independent source-health result supporting the snapshot conclusion
+ * @param sourceHealthDetail source reconciliation detail supporting the conclusion
+ * @param sourceEvidenceCheckedAt time the supporting source evidence was checked
  * @param createdAt record creation timestamp
  * @param updatedAt record update timestamp
  */
@@ -39,6 +42,9 @@ public record TaskInstanceResponse(
         String observedSnapshotId,
         LocalDateTime scheduledAt,
         LocalDateTime lastSnapshotCheckAt,
+        String sourceHealth,
+        String sourceHealthDetail,
+        LocalDateTime sourceEvidenceCheckedAt,
         LocalDateTime createdAt,
         LocalDateTime updatedAt) {
 }

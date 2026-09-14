@@ -3,6 +3,7 @@ package io.github.lakehouseflow.dao;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.model.TaskInstance;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -112,4 +113,37 @@ public interface TaskInstanceRepository extends JpaRepository<TaskInstance, Long
             Long flowPlanVersionId,
             LocalDateTime bizDate,
             String state);
+
+    /**
+     * Find task scheduling records that currently occupy an operational wait phase.
+     *
+     * @param blockerType optional stable blocker category
+     * @param flowCode optional owning workflow or Flow code
+     * @param targetAssetKey optional exact table/partition target or table prefix
+     * @param pageable bounded result page
+     * @return newest matching scheduler-owned blockers first
+     */
+    @Query("""
+            SELECT task
+            FROM TaskInstance task, WorkflowInstance workflow
+            WHERE workflow.id = task.workflowInstanceId
+              AND task.state IN ('WAITING_SNAPSHOT', 'READY_TO_SCHEDULE', 'SCHEDULED')
+              AND (:flowCode IS NULL OR workflow.workflowCode = :flowCode)
+              AND (:targetAssetKey IS NULL
+                   OR task.targetAssetKey = :targetAssetKey
+                   OR task.targetAssetKey LIKE CONCAT(:targetAssetKey, '.%'))
+              AND (:blockerType IS NULL
+                   OR (:blockerType = 'INPUT_SNAPSHOT' AND task.state = 'WAITING_SNAPSHOT')
+                   OR (:blockerType = 'INTENT_PUBLICATION' AND task.state = 'READY_TO_SCHEDULE')
+                   OR (:blockerType = 'TARGET_SNAPSHOT' AND task.state = 'SCHEDULED'
+                       AND (task.sourceHealth IS NULL OR task.sourceHealth = 'HEALTHY'))
+                   OR (:blockerType = 'SOURCE_BLOCKED' AND task.state = 'SCHEDULED'
+                       AND task.sourceHealth IN ('REPAIRABLE', 'SOURCE_BLOCKED')))
+            ORDER BY task.updatedAt DESC, task.id DESC
+            """)
+    List<TaskInstance> findOperationalBlockers(
+            @Param("blockerType") String blockerType,
+            @Param("flowCode") String flowCode,
+            @Param("targetAssetKey") String targetAssetKey,
+            Pageable pageable);
 }

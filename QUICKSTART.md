@@ -123,7 +123,7 @@ lakehouse-flow:
               table: orders
 ```
 
-认证材料由部署环境提供，不应提交到仓库。当前 Paimon adapter 已实现读取逻辑，但 `LF-1.0` 要求的 Flink CDC 流式 ODS、不绑定 task 的平台 `JobControlIntent(START_JOB|RESTART_JOB)`、单表单 `writerJobKey` 绑定、writer epoch fencing、流批一体 writer-side snapshot 属性注入和系统级 E2E 尚未完成。批式路径在 `JOB_END` 提交完成证据；流式路径在 checkpoint 覆盖 intent 冻结输入向量时提交完成证据，`final` 不表示流作业结束。
+认证材料由部署环境提供，不应提交到仓库。当前 Paimon source、Flink CDC 流式 ODS、独立 `JobControlIntent(START_JOB|RESTART_JOB)`、单表单 `writerJobKey`、writer epoch fencing 和流批一体 writer-side snapshot 属性注入均已有真实闭环基线。批式路径在有界输入结束时提交完成证据；流式路径在 checkpoint 覆盖 intent 冻结输入向量时提交完成证据，`final` 不表示流作业结束。完整生产配置和故障处置见 `OPERATIONS_RUNBOOK.md`。
 
 ## 7. 常见排查
 
@@ -165,5 +165,7 @@ docker compose up -d postgres
 - `ARCHITECTURE.md`：当前架构与核心事务
 - `SCHEDULING_MODEL_DESIGN.md`：对象模型、DAG、action 和补数语义
 - `SCHEDULING_INTENT_CONTRACT.md`：下游消费与 snapshot 归因契约
+- `OPERATIONS_RUNBOOK.md`：生产接入、巡检和故障处置
+- `DATABASE_OPERATIONS.md`：PostgreSQL 升级、恢复与保留策略
 - `DEVELOPMENT.md`：开发规则
 - `PHASE2_PROGRESS.md`：当前进度和唯一待办基准

@@ -82,26 +82,32 @@ public interface SchedulingIntentDeliveryRepository extends JpaRepository<Schedu
     List<SchedulingIntentDeliveryStatusCount> countByChannelAndStatus();
 
     /**
-     * Find the latest dead-lettered deliveries across all channels.
+     * Find latest dead-lettered data scheduling-intent deliveries with scoped filters.
      *
      * @param status terminal delivery status
-     * @param pageable bounded result page
-     * @return newest dead-letter rows first
-     */
-    List<SchedulingIntentDelivery> findByStatusOrderByDeadLetteredAtDescIdDesc(
-            String status,
-            Pageable pageable);
-
-    /**
-     * Find the latest dead-lettered deliveries for one selected channel.
-     *
-     * @param status terminal delivery status
-     * @param channel selected transport channel
+     * @param channel optional selected transport channel
+     * @param flowCode optional owning workflow or Flow code
+     * @param targetAssetKey optional exact target or physical-table prefix
      * @param pageable bounded result page
      * @return newest matching dead-letter rows first
      */
-    List<SchedulingIntentDelivery> findByStatusAndChannelOrderByDeadLetteredAtDescIdDesc(
-            String status,
-            String channel,
+    @Query("""
+            SELECT delivery
+            FROM SchedulingIntentDelivery delivery, SchedulingIntent intent, WorkflowInstance workflow
+            WHERE delivery.schedulingIntentId = intent.id
+              AND workflow.id = intent.workflowInstanceId
+              AND delivery.status = :status
+              AND (:channel IS NULL OR delivery.channel = :channel)
+              AND (:flowCode IS NULL OR workflow.workflowCode = :flowCode)
+              AND (:targetAssetKey IS NULL
+                   OR intent.targetAssetKey = :targetAssetKey
+                   OR intent.targetAssetKey LIKE CONCAT(:targetAssetKey, '.%'))
+            ORDER BY delivery.deadLetteredAt DESC, delivery.id DESC
+            """)
+    List<SchedulingIntentDelivery> findDeadLetters(
+            @Param("status") String status,
+            @Param("channel") String channel,
+            @Param("flowCode") String flowCode,
+            @Param("targetAssetKey") String targetAssetKey,
             Pageable pageable);
 }

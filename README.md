@@ -5,7 +5,7 @@
 
 Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
-当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准。
+当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
 
 ## 一句话边界
 
@@ -226,7 +226,14 @@ HTTP 只把 2xx 视为传输 ACK；MQ gateway 正常返回只表示 broker 接�
 ```bash
 curl http://localhost:8080/actuator/prometheus
 curl 'http://localhost:8080/api/v1/scheduling-intent-deliveries/dead-letters?channel=MQ&limit=100'
+curl 'http://localhost:8080/api/v1/job-control-intent-deliveries/dead-letters?channel=HTTP&limit=100'
+curl 'http://localhost:8080/api/v1/operations/blockers?flowCode=flow.orders&limit=100'
+curl 'http://localhost:8080/api/v1/operations/snapshot-sources?sourceType=PAIMON&sourceHealth=SOURCE_BLOCKED&limit=100'
 ```
+
+`/api/v1/operations/blockers` 聚合 Lakehouse Flow 自己持有的调度、传输和 snapshot/source 证据，支持按 `blockerType`、`flowCode` 和 `targetAssetKey` 过滤。稳定分类为 `INPUT_SNAPSHOT`、`DAG_DEPENDENCY`、`DATE_CONCURRENCY`、`INTENT_PUBLICATION`、`TARGET_SNAPSHOT`、`SOURCE_BLOCKED` 和 `DELIVERY_EXHAUSTED`；它们都不是下游执行状态。`/api/v1/operations/snapshot-sources` 支持按 source、Flow、目标表或分区、`HEALTHY/REPAIRABLE/SOURCE_BLOCKED` 过滤最新持久化对账证据，其中数据库内部的 `BLOCKED` 统一映射为外部 `SOURCE_BLOCKED`。两类 dead-letter API 只说明传输尝试耗尽，不说明批作业或流 writer 启动失败。
+
+task snapshot 证据从 V23 起独立保存 `sourceHealth`、`sourceHealthDetail` 和 `sourceEvidenceCheckedAt`，不再要求运维查询解析 `waitingReason` 文本。`TaskInstance`、Action detail 和统一 blockers 都复用这组结构化证据；`SNAPSHOT_NOT_ADVANCED` 只会同时记录确认窗口之后的 `HEALTHY` source 证据，source 缺口则保持 `SCHEDULED + SOURCE_BLOCKED/REPAIRABLE`。
 
 核心指标包括 `lakehouse_flow_scheduling_decision_plan_inspections_total`、`lakehouse_flow_scheduling_decision_trigger_evaluations_total`、`lakehouse_flow_scheduling_decision_trigger_evaluation_duration_seconds`、`lakehouse_flow_scheduling_backlog_task_instances`、`lakehouse_flow_scheduling_backlog_backfill_blocked_items`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。调度决策 metric 只使用检查/决策结果等低基数 tag，Flow、asset、snapshot 和 trigger 标识留在结构化日志与 `TriggerHistory`。task backlog 只统计 `CREATED`、`WAITING_SNAPSHOT`、`READY_TO_SCHEDULE`、`SCHEDULED` 四个非终态，其中 `SCHEDULED` 表示意图已发布并等待目标 snapshot；补数阻塞只使用 `DATE_CONCURRENCY` 和 `DAG_DEPENDENCY`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
 
@@ -312,7 +319,7 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 ## 下一步建议
 
 1. LF-1.0 真实 Paimon 闭环与 PostgreSQL 高可用恢复已经完成：普通 DAG、重启、Node 子图补数、双 scheduler 竞争和中断恢复均已验收。
-2. 在同一整体 E2E 中补齐重跑、完整 Flow 补数和失败恢复，完成 R2 的剩余 action 集合。
-3. 补 `DATABASE_TABLE` 正式投递，以及两类 intent 的 HTTP 超时、重试耗尽和死信路径；HTTP 至少一次重投与下游 `intentKey` 幂等已经通过。
-4. 收口最小运维查询和兼容性回归后冻结 1.0 契约。
+2. 补齐 OBS-2 的可部署 Prometheus 告警规则和排障证据链接。
+3. 在同一整体 E2E 中验收剩余 action、`DATABASE_TABLE` 正式投递、HTTP 耗尽路径、四种结果语义和流批边界。
+4. 基于集中 E2E 反馈冻结 1.0 REST、intent payload、schema 和兼容策略。
 5. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。

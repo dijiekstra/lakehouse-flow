@@ -30,7 +30,8 @@ import java.time.LocalDateTime;
         @Index(name = "idx_task_flow_plan_version", columnList = "flow_plan_version_id"),
         @Index(name = "idx_task_schedule_node", columnList = "schedule_node_id"),
         @Index(name = "idx_task_state", columnList = "state,updated_at DESC"),
-        @Index(name = "idx_task_target_asset", columnList = "target_asset_key")
+        @Index(name = "idx_task_target_asset", columnList = "target_asset_key"),
+        @Index(name = "idx_task_source_health", columnList = "source_health,updated_at DESC")
     }
 )
 @Data
@@ -141,6 +142,18 @@ public class TaskInstance {
      */
     @Column(name = "last_snapshot_check_at")
     private LocalDateTime lastSnapshotCheckAt;
+
+    /** Independent source-health result supporting the latest snapshot conclusion. */
+    @Column(name = "source_health", length = 32)
+    private String sourceHealth;
+
+    /** Source reconciliation detail supporting the latest snapshot conclusion. */
+    @Column(name = "source_health_detail", columnDefinition = "text")
+    private String sourceHealthDetail;
+
+    /** Time at which the supporting source evidence was checked. */
+    @Column(name = "source_evidence_checked_at")
+    private LocalDateTime sourceEvidenceCheckedAt;
 
     /**
      * Record creation time
