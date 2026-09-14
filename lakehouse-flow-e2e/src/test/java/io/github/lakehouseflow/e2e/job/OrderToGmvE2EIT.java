@@ -1142,11 +1142,10 @@ class OrderToGmvE2EIT {
                 if (response.statusCode() != 200) {
                     continue;
                 }
-                String rootException = OBJECT_MAPPER.readTree(response.body())
-                        .path("root-exception")
-                        .asText();
-                if (!rootException.isBlank()) {
-                    return writerJob.getKey() + " (" + writerJob.getValue() + "): " + rootException;
+                JsonNode rootException = OBJECT_MAPPER.readTree(response.body())
+                        .path("root-exception");
+                if (rootException.isTextual() && !rootException.textValue().isBlank()) {
+                    return writerJob.getKey() + " (" + writerJob.getValue() + "): " + rootException.textValue();
                 }
             }
             return null;
@@ -1159,11 +1158,11 @@ class OrderToGmvE2EIT {
                 throw new IllegalStateException("No active Flink job is tracked for restart: " + writerJobKey);
             }
             org.testcontainers.containers.Container.ExecResult running = environment.jobManager().execInContainer(
-                    "flink", "list", "-r", "-m", FLINK_JOB_MANAGER_ALIAS + ":8081");
+                    "gosu", "flink", "flink", "list", "-r", "-m", FLINK_JOB_MANAGER_ALIAS + ":8081");
             requireSuccessfulExecution("list-running-jobs", running);
             if (running.getStdout().contains(jobId)) {
                 org.testcontainers.containers.Container.ExecResult cancelled = environment.jobManager().execInContainer(
-                        "flink", "cancel", "-m", FLINK_JOB_MANAGER_ALIAS + ":8081", jobId);
+                        "gosu", "flink", "flink", "cancel", "-m", FLINK_JOB_MANAGER_ALIAS + ":8081", jobId);
                 requireSuccessfulExecution("cancel-writer:" + writerJobKey, cancelled);
             }
             return awaitLatestCheckpoint(jobId, environment);
@@ -1261,7 +1260,7 @@ class OrderToGmvE2EIT {
             addArgument(command, "mysql-password", environment.mysqlPassword());
         }
 
-        /** Build the invariant prefix for detached or attached Flink CLI submissions. */
+        /** Build a non-root Flink CLI prefix matching the JobManager and TaskManager user. */
         private List<String> flinkCommand(boolean detached) {
             return flinkCommand(detached, null);
         }
@@ -1269,7 +1268,7 @@ class OrderToGmvE2EIT {
         /** Build a Flink CLI submission that optionally restores operator state from a checkpoint. */
         private List<String> flinkCommand(boolean detached, String restorePath) {
             List<String> command = new ArrayList<>(List.of(
-                    "flink", "run"));
+                    "gosu", "flink", "flink", "run"));
             if (detached) {
                 command.add("-d");
             }
