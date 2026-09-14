@@ -35,7 +35,7 @@ class JobControlIntentDeliveryScannerTest {
     private SchedulingIntentPublisher publisher;
 
     @Mock
-    private SchedulingIntentDeliveryMetrics deliveryMetrics;
+    private JobControlIntentDeliveryMetrics deliveryMetrics;
 
     private JobControlIntentDeliveryScanner scanner;
 

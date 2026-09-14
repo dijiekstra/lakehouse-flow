@@ -1,0 +1,102 @@
+# Scheduler, transport, and snapshot-source alerts only. These rules never infer
+# downstream execution state from delivery acknowledgements or engine status.
+groups:
+  - name: lakehouse-flow-decision
+    interval: 30s
+    rules:
+      - alert: LakehouseFlowDecisionFailure
+        expr: >-
+          sum(increase(lakehouse_flow_scheduling_decision_trigger_evaluations_total{decision="failed"}[5m])) > 0
+        labels:
+          severity: critical
+          subsystem: scheduling-decision
+        annotations:
+          summary: "Lakehouse Flow scheduling decision failed closed"
+          description: "At least one FlowPlan trigger evaluation failed during the last five minutes. No downstream execution result is implied."
+          evidence_api: "/actuator/metrics/lakehouse.flow.scheduling.decision.trigger.evaluations?tag=decision:failed"
+          runbook: "OPERATIONS_RUNBOOK.md#71-decision-failure"
+
+  - name: lakehouse-flow-snapshot-source
+    interval: 30s
+    rules:
+      - alert: LakehouseFlowSnapshotRetentionGap
+        expr: >-
+          max by (source_type, source_name) (lakehouse_flow_snapshot_source_retention_gap) > 0
+        for: 5m
+        labels:
+          severity: critical
+          subsystem: snapshot-source
+        annotations:
+          summary: "Snapshot source history has a retention gap"
+          description: "Source {{ $labels.source_type }}/{{ $labels.source_name }} cannot prove continuity from its durable offset. Snapshot timeout decisions must remain blocked."
+          evidence_api: "/api/v1/operations/snapshot-sources?sourceType={{ $labels.source_type }}&sourceName={{ $labels.source_name }}"
+          runbook: "OPERATIONS_RUNBOOK.md#72-source_blocked"
+
+      - alert: LakehouseFlowSnapshotProjectionInconsistent
+        expr: >-
+          max by (source_type, source_name) (lakehouse_flow_snapshot_source_projection_inconsistent) > 0
+        for: 5m
+        labels:
+          severity: critical
+          subsystem: snapshot-source
+        annotations:
+          summary: "Snapshot source projection is inconsistent"
+          description: "Source {{ $labels.source_type }}/{{ $labels.source_name }} disagrees with durable event or AssetState evidence. Snapshot results are not trustworthy until reconciliation succeeds."
+          evidence_api: "/api/v1/operations/snapshot-sources?sourceType={{ $labels.source_type }}&sourceName={{ $labels.source_name }}"
+          runbook: "OPERATIONS_RUNBOOK.md#72-source_blocked"
+
+  - name: lakehouse-flow-delivery
+    interval: 30s
+    rules:
+      - alert: LakehouseFlowDataIntentDeliveryExhausted
+        expr: >-
+          sum by (channel) (increase(lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total{outcome="exhausted"}[5m])) > 0
+        labels:
+          severity: warning
+          subsystem: data-intent-delivery
+        annotations:
+          summary: "Data scheduling intent entered the delivery dead letter"
+          description: "At least one {{ $labels.channel }} data intent exhausted its transport attempts. This does not mean the downstream computation failed."
+          evidence_api: "/api/v1/scheduling-intent-deliveries/dead-letters?channel={{ $labels.channel }}&limit=100"
+          runbook: "OPERATIONS_RUNBOOK.md#73-delivery_exhausted"
+
+      - alert: LakehouseFlowJobControlIntentDeliveryExhausted
+        expr: >-
+          sum by (channel) (increase(lakehouse_flow_job_control_intent_delivery_publisher_attempts_total{outcome="exhausted"}[5m])) > 0
+        labels:
+          severity: warning
+          subsystem: job-control-intent-delivery
+        annotations:
+          summary: "Job-control intent entered the delivery dead letter"
+          description: "At least one {{ $labels.channel }} START/RESTART intent exhausted its transport attempts. This does not prove that a writer failed to start."
+          evidence_api: "/api/v1/job-control-intent-deliveries/dead-letters?channel={{ $labels.channel }}&limit=100"
+          runbook: "OPERATIONS_RUNBOOK.md#73-delivery_exhausted"
+
+  - name: lakehouse-flow-backlog
+    interval: 30s
+    rules:
+      - alert: LakehouseFlowReadyIntentBacklog
+        expr: >-
+          sum(lakehouse_flow_scheduling_backlog_task_instances{state="READY_TO_SCHEDULE"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+          subsystem: scheduling-backlog
+        annotations:
+          summary: "Scheduling decisions remain ready without an intent"
+          description: "At least one task has remained in the aggregate READY_TO_SCHEDULE backlog for 15 minutes. Inspect publication, writer admission, Flow concurrency, and target-date admission evidence."
+          evidence_api: "/api/v1/operations/blockers?blockerType=INTENT_PUBLICATION&limit=100"
+          runbook: "OPERATIONS_RUNBOOK.md#6-daily-inspection"
+
+      - alert: LakehouseFlowTargetSnapshotBacklog
+        expr: >-
+          sum(lakehouse_flow_scheduling_backlog_task_instances{state="SCHEDULED"}) > 0
+        for: 45m
+        labels:
+          severity: warning
+          subsystem: snapshot-confirmation
+        annotations:
+          summary: "Published intents remain without target snapshot confirmation"
+          description: "At least one task has remained in the aggregate SCHEDULED backlog for 45 minutes. Inspect target snapshot attribution and source health; do not infer downstream task failure."
+          evidence_api: "/api/v1/operations/blockers?blockerType=TARGET_SNAPSHOT&limit=100"
+          runbook: "OPERATIONS_RUNBOOK.md#74-snapshot_not_advanced"

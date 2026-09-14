@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
+import io.github.lakehouseflow.common.SchedulingIntentContract;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.dao.AssetStateRepository;
@@ -469,7 +470,7 @@ class SchedulerRecoveryE2EIT {
                 "ha.delivery." + suffix.replace('-', '_'));
         String intentKey = "ha-delivery:" + suffix;
         SchedulingIntent intent = schedulingIntentRepository.save(SchedulingIntent.builder()
-                .contractVersion(SnapshotEvidenceContract.CONTRACT_VERSION)
+                .contractVersion(SchedulingIntentContract.CONTRACT_VERSION)
                 .intentKey(intentKey)
                 .taskInstanceId(task.getId())
                 .workflowInstanceId(workflow.getId())
@@ -484,7 +485,7 @@ class SchedulerRecoveryE2EIT {
                 .inputSnapshotVectorJson(List.of())
                 .instructionPayloadJson(Map.of(
                         "intentKey", intentKey,
-                        "contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION))
+                        "contractVersion", SchedulingIntentContract.CONTRACT_VERSION))
                 .createdAt(now)
                 .build());
         return deliveryRepository.save(SchedulingIntentDelivery.builder()

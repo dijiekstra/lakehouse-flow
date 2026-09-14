@@ -12,6 +12,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 class FlowPlanDecisionMetricsTest {
 
+    /** Verify the first failure can be observed as an increase from a registered zero series. */
+    @Test
+    void constructorRegistersFailureSeries() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        new FlowPlanDecisionMetrics(registry);
+
+        assertEquals(0.0, registry.counter(
+                "lakehouse.flow.scheduling.decision.trigger.evaluations",
+                "decision", "failed").count());
+    }
+
     /** Verify every plan inspection is counted under its bounded outcome tag. */
     @Test
     void recordInspectionCountsBoundedOutcome() {

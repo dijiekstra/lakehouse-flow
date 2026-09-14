@@ -50,6 +50,17 @@ public interface JobControlIntentDeliveryRepository extends JpaRepository<JobCon
     Optional<JobControlIntentDelivery> findByIdForUpdate(@Param("id") Long id);
 
     /**
+     * Count current job-control delivery rows by channel and transport-only status.
+     *
+     * @return grouped counts used by Micrometer backlog gauges
+     */
+    @Query("SELECT delivery.channel AS channel, delivery.status AS status, " +
+           "COUNT(delivery) AS deliveryCount " +
+           "FROM JobControlIntentDelivery delivery " +
+           "GROUP BY delivery.channel, delivery.status")
+    List<SchedulingIntentDeliveryStatusCount> countByChannelAndStatus();
+
+    /**
      * Find latest exhausted job-control deliveries with scoped filters.
      *
      * @param status terminal delivery status

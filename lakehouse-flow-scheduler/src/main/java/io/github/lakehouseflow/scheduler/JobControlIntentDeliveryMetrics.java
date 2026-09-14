@@ -2,7 +2,7 @@ package io.github.lakehouseflow.scheduler;
 
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
-import io.github.lakehouseflow.dao.SchedulingIntentDeliveryRepository;
+import io.github.lakehouseflow.dao.JobControlIntentDeliveryRepository;
 import io.github.lakehouseflow.dao.SchedulingIntentDeliveryStatusCount;
 import io.github.lakehouseflow.service.delivery.SchedulingIntentPublication;
 import io.micrometer.core.instrument.Counter;
@@ -19,12 +19,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Micrometer instrumentation for scheduling-intent transport attempts and backlog.
+ * Micrometer instrumentation for job-control intent transport attempts and backlog.
+ *
+ * <p>Control metrics are deliberately separate from data-processing intent metrics so
+ * START/RESTART transport failures cannot be mistaken for data scheduling failures.
  */
 @Component
-public class SchedulingIntentDeliveryMetrics {
+public class JobControlIntentDeliveryMetrics {
 
-    private static final String METRIC_PREFIX = "lakehouse.flow.scheduling.intent.delivery";
+    private static final String METRIC_PREFIX = "lakehouse.flow.job.control.intent.delivery";
     private static final List<String> CHANNELS = List.of(
             SchedulingIntentDeliveryChannels.DATABASE_TABLE,
             SchedulingIntentDeliveryChannels.HTTP,
@@ -43,18 +46,18 @@ public class SchedulingIntentDeliveryMetrics {
             "stale_acknowledgement");
 
     private final MeterRegistry meterRegistry;
-    private final SchedulingIntentDeliveryRepository deliveryRepository;
+    private final JobControlIntentDeliveryRepository deliveryRepository;
     private final Map<BacklogKey, AtomicLong> backlog = new ConcurrentHashMap<>();
 
     /**
-     * Create delivery metrics and register bounded channel/status backlog gauges.
+     * Create job-control delivery metrics and register bounded backlog gauges.
      *
      * @param meterRegistry application meter registry
-     * @param deliveryRepository delivery repository used for grouped backlog refresh
+     * @param deliveryRepository job-control delivery repository
      */
-    public SchedulingIntentDeliveryMetrics(
+    public JobControlIntentDeliveryMetrics(
             MeterRegistry meterRegistry,
-            SchedulingIntentDeliveryRepository deliveryRepository) {
+            JobControlIntentDeliveryRepository deliveryRepository) {
         this.meterRegistry = meterRegistry;
         this.deliveryRepository = deliveryRepository;
         CHANNELS.forEach(channel -> {
@@ -64,9 +67,9 @@ public class SchedulingIntentDeliveryMetrics {
     }
 
     /**
-     * Record one claimed transport attempt and its fenced persistence outcome.
+     * Record one claimed job-control transport attempt and its fenced result.
      *
-     * @param publication claimed immutable publication
+     * @param publication claimed immutable control publication
      * @param outcome transport outcome such as published, retry_scheduled, exhausted, or stale
      * @param duration publisher call duration
      */
@@ -84,10 +87,8 @@ public class SchedulingIntentDeliveryMetrics {
                 .record(duration);
     }
 
-    /**
-     * Refresh current delivery backlog gauges with one grouped database query.
-     */
-    @Scheduled(fixedDelayString = "${lakehouse-flow.scheduling-intent-delivery.metrics.fixed-delay-ms:10000}")
+    /** Refresh current job-control delivery backlog gauges from one grouped query. */
+    @Scheduled(fixedDelayString = "${lakehouse-flow.job-control-intent-delivery.metrics.fixed-delay-ms:10000}")
     public void refreshBacklog() {
         backlog.values().forEach(value -> value.set(0L));
         for (SchedulingIntentDeliveryStatusCount count : deliveryRepository.countByChannelAndStatus()) {
@@ -98,7 +99,7 @@ public class SchedulingIntentDeliveryMetrics {
         }
     }
 
-    /** Register one channel and status backlog gauge. */
+    /** Register one job-control channel and status backlog gauge. */
     private AtomicLong registerBacklogGauge(String channel, String status) {
         BacklogKey key = new BacklogKey(channel, status);
         AtomicLong value = new AtomicLong();
@@ -112,7 +113,7 @@ public class SchedulingIntentDeliveryMetrics {
         return value;
     }
 
-    /** Register a bounded attempt counter and timer so the first failure is observable. */
+    /** Register a bounded control attempt counter and timer before the first failure. */
     private void registerAttemptMeters(String channel, String outcome) {
         Counter.builder(METRIC_PREFIX + ".publisher.attempts")
                 .tags("channel", channel, "outcome", outcome)
@@ -122,7 +123,7 @@ public class SchedulingIntentDeliveryMetrics {
                 .register(meterRegistry);
     }
 
-    /** Stable gauge key for one transport channel and state. */
+    /** Stable gauge key for one job-control transport channel and state. */
     private record BacklogKey(String channel, String status) {
     }
 }

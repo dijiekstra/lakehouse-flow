@@ -8,8 +8,8 @@
 
 1. `PHASE2_PROGRESS.md`：版本目标、优先级、当前完成度、差距和验证快照的唯一真源。
 2. `ARCHITECTURE.md`、`SCHEDULING_MODEL_DESIGN.md`：当前架构与对象模型不变量。
-3. `SCHEDULING_INTENT_CONTRACT.md`：Lakehouse Flow 与下游之间的协议真源。
-4. `OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`：生产接入、故障处置、数据库升级恢复和数据保留边界。
+3. `SCHEDULING_INTENT_CONTRACT.md`、`LF1_COMPATIBILITY.md`：Lakehouse Flow 与下游之间的协议、REST 和版本兼容真源。
+4. `OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`、`OBSERVABILITY.md`：生产接入、故障处置、数据库操作、指标与告警边界。
 5. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
 6. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
 
@@ -24,8 +24,10 @@
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 架构真源 | 组件、事务、扫描循环、归因与互斥如何协作 |
 | [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | 模型真源 | FlowPlan、Node、实例、action、补数和 DAG 的语义 |
 | [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 协议真源 | 数据处理与作业控制两类出站意图如何投递、幂等，以及目标 snapshot 必须写什么 |
+| [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md) | 兼容真源 | `/api/v1`、两类 intent、未知字段和 V1～V23 migration 如何演进 |
 | [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) | 生产运维手册 | 如何配置投递与 source、启动/重启 writer，以及处置阻塞、死信和补数 |
 | [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md) | 数据库运维策略 | 如何升级、备份、恢复 PostgreSQL，以及哪些数据可以归档清理 |
+| [OBSERVABILITY.md](./OBSERVABILITY.md) | 可观测性与告警 | 指标代表什么、Prometheus 规则如何加载、告警去哪里取证 |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | 当前开发指南 | 本地环境、代码约束和验证方式 |
 | [QUICKSTART.md](./QUICKSTART.md) | 当前启动指南 | 如何启动 PostgreSQL、构建、运行和排查 |
 | [TECH_STACK.md](./TECH_STACK.md) | 当前技术基线 | 实际依赖、模块边界、已实现与未实现的基础设施 |
@@ -80,8 +82,9 @@
 ### 下游集成
 
 1. `SCHEDULING_INTENT_CONTRACT.md`
-2. `ARCHITECTURE.md`
-3. `QUICKSTART.md`
+2. `LF1_COMPATIBILITY.md`
+3. `ARCHITECTURE.md`
+4. `QUICKSTART.md`
 
 ### 测试与投产验收
 
@@ -94,16 +97,19 @@
 ### 生产运维
 
 1. `OPERATIONS_RUNBOOK.md`
-2. `DATABASE_OPERATIONS.md`
-3. `SCHEDULING_INTENT_CONTRACT.md`
-4. `PHASE2_PROGRESS.md`
+2. `OBSERVABILITY.md`
+3. `DATABASE_OPERATIONS.md`
+4. `SCHEDULING_INTENT_CONTRACT.md`
+5. `PHASE2_PROGRESS.md`
 
 ## 更新规则
 
 - 版本目标、优先级和完成度只更新 `PHASE2_PROGRESS.md`，其他文档通过链接引用。
 - 架构或对象语义变化必须同步更新对应权威文档和测试。
 - 下游 payload 或归因属性变化必须同步更新 `SCHEDULING_INTENT_CONTRACT.md`。
+- REST 路由、请求兼容、intent schema、版本或 migration 冻结基线变化必须同步更新 `LF1_COMPATIBILITY.md` 和机器可读契约。
 - 依赖、模块或构建方式变化必须同步更新 `TECH_STACK.md`、`DEVELOPMENT.md` 或 `QUICKSTART.md`。
 - 投递、source、writer、故障处置或数据库运维规则变化必须同步更新两份生产运维手册。
+- 指标名称、标签、告警条件或证据入口变化必须同步更新 `OBSERVABILITY.md` 和 Prometheus 规则文件。
 - 阶段总结一旦过期，保留内容但在标题后明确标记为历史。
 - 未经过测试或真实环境验证的能力必须写成“未验证”或“未实现”，不得写成“生产就绪”。

@@ -165,7 +165,9 @@ docker compose up -d postgres
 - `ARCHITECTURE.md`：当前架构与核心事务
 - `SCHEDULING_MODEL_DESIGN.md`：对象模型、DAG、action 和补数语义
 - `SCHEDULING_INTENT_CONTRACT.md`：下游消费与 snapshot 归因契约
+- `LF1_COMPATIBILITY.md`：REST、intent 与 migration 的 1.0 兼容规则
 - `OPERATIONS_RUNBOOK.md`：生产接入、巡检和故障处置
 - `DATABASE_OPERATIONS.md`：PostgreSQL 升级、恢复与保留策略
+- `OBSERVABILITY.md`：Prometheus 指标、告警和证据入口
 - `DEVELOPMENT.md`：开发规则
 - `PHASE2_PROGRESS.md`：当前进度和唯一待办基准

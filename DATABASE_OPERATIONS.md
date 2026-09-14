@@ -13,7 +13,7 @@
 5. Lakehouse Flow 的 offset、事件、AssetState、intent 和 snapshot 证据必须作为一致整体处理。
 6. 不使用字符串 SQL 比较湖格式 snapshot id 来决定清理边界；顺序语义属于 source adapter。
 
-当前 canonical migration 由 `lakehouse-flow-dao/src/main/resources/db/migration` 中的 V1、V3-V23，以及 `lakehouse-flow-boot/src/main/resources/db/migration/V2.0__phase2_tables.sql` 共同组成。V2 是已经进入历史 checksum 的有效 migration，不能移动或重写；后续版本统一新增到 dao 模块，并始终由 Flyway 通过完整应用 classpath 执行，不得手工挑选 SQL。
+当前 canonical migration 由 `lakehouse-flow-dao/src/main/resources/db/migration` 中的 V1、V3-V23，以及 `lakehouse-flow-boot/src/main/resources/db/migration/V2.0__phase2_tables.sql` 共同组成。V2 是已经进入历史 checksum 的有效 migration，不能移动或重写；后续版本统一新增到 dao 模块，并始终由 Flyway 通过完整应用 classpath 执行，不得手工挑选 SQL。`Lf10ContractCompatibilityTests` 已固定 V1-V23 的 SHA-256，历史 SQL 改写会直接使开发构建失败。
 
 ## 2. Migration 兼容策略
 
@@ -33,7 +33,7 @@ V1-V23 是 LF-1.0 冻结前形成的历史基线。从 V23 之后新增 migratio
 3. **Backfill/Observe**：回填并观察至少一个完整业务和故障恢复周期。
 4. **Contract**：下一发布才移除旧结构，且必须另有升级前备份。
 
-当前未完成 STB-5 契约冻结前，任何破坏性 migration 都不得进入 LF-1.0。
+STB-5 已形成开发冻结候选；最终整体 E2E 通过前，任何破坏性 migration 都不得进入 LF-1.0。REST、intent 与 schema 的统一版本规则见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)。
 
 ## 3. 升级前检查
 
@@ -202,6 +202,6 @@ GROUP BY source_type, outcome;
 4. 是否可能长时间锁表、全表回填或放大 WAL？
 5. 是否有升级前备份、隔离恢复和失败切换方案？
 6. 是否更新 JPA 模型、Repository 查询、测试和本手册？
-7. 是否需要推迟到 STB-5 契约冻结之后？
+7. 是否违反 STB-5 已固定的 API、intent 或 V1-V23 schema 兼容边界？
 
 任一问题没有证据时，migration 不进入生产发布。

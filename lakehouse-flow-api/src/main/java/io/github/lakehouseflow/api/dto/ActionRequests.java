@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -24,6 +25,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record RerunWorkflowRequest(
             @NotNull Long workflowInstanceId,
             @NotBlank String actionKey,
@@ -41,6 +43,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record RerunNodeRequest(
             @NotNull Long flowPlanVersionId,
             @NotBlank String nodeCode,
@@ -64,6 +67,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record BackfillWorkflowRequest(
             @NotBlank String workflowCode,
             Integer workflowVersion,
@@ -92,6 +96,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record BackfillNodeRequest(
             @NotNull Long flowPlanVersionId,
             @NotBlank String startNodeCode,
@@ -115,6 +120,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record RecoverBackfillRequest(
             @NotNull Long backfillBatchId,
             String recoveryStrategy,
@@ -131,6 +137,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record BackfillBatchActionRequest(
             @NotNull Long backfillBatchId,
             @NotBlank String actionKey,
@@ -146,6 +153,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record WorkflowInstanceActionRequest(
             @NotNull Long workflowInstanceId,
             @NotBlank String actionKey,
@@ -161,6 +169,7 @@ public final class ActionRequests {
      * @param requestedBy user or system identity requesting the action
      * @param reason human-readable reason
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record TaskInstanceActionRequest(
             @NotNull Long taskInstanceId,
             @NotBlank String actionKey,

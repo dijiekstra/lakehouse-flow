@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 
 import java.util.List;
@@ -19,6 +20,7 @@ import java.util.Map;
  * @param confirmationPolicyJson node-level snapshot confirmation policy
  * @param sortOrder deterministic graph ordering hint
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateScheduleNodeRequest(
         @NotBlank String nodeCode,
         @NotBlank String nodeName,

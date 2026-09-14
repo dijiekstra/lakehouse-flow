@@ -34,7 +34,7 @@ class MqSchedulingIntentPublisherTest {
     @InjectMocks
     private MqSchedulingIntentPublisher publisher;
 
-    /** Verify MQ publication preserves the intent key and exact instruction payload. */
+    /** Verify MQ publication preserves an older same-major version and exact payload. */
     @Test
     @SuppressWarnings("unchecked")
     void publishSendsImmutableInstructionPayload() {

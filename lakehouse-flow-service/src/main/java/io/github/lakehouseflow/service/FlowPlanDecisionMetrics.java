@@ -28,6 +28,20 @@ public class FlowPlanDecisionMetrics {
      */
     public FlowPlanDecisionMetrics(MeterRegistry meterRegistry) {
         this.meterRegistry = meterRegistry;
+        for (FlowPlanInspectionOutcome outcome : FlowPlanInspectionOutcome.values()) {
+            Counter.builder(METRIC_PREFIX + ".plan.inspections")
+                    .tag("outcome", tag(outcome))
+                    .register(meterRegistry);
+        }
+        for (FlowPlanTriggerDecision decision : FlowPlanTriggerDecision.values()) {
+            String decisionTag = tag(decision);
+            Counter.builder(METRIC_PREFIX + ".trigger.evaluations")
+                    .tag("decision", decisionTag)
+                    .register(meterRegistry);
+            Timer.builder(METRIC_PREFIX + ".trigger.evaluation.duration")
+                    .tag("decision", decisionTag)
+                    .register(meterRegistry);
+        }
     }
 
     /**

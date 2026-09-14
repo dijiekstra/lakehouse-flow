@@ -8,6 +8,9 @@ public final class JobControlIntentContract {
     /** First stable job-control payload version. */
     public static final String CONTRACT_VERSION = "1.0";
 
+    /** Stable discriminator for an independent writer lifecycle instruction. */
+    public static final String INTENT_KIND = "JOB_CONTROL";
+
     /** A control intent is still waiting for attributable target data. */
     public static final String WAITING = "WAITING";
 

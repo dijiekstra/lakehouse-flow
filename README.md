@@ -5,7 +5,7 @@
 
 Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
-当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
+当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，契约演进见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
 
 ## 一句话边界
 
@@ -235,13 +235,13 @@ curl 'http://localhost:8080/api/v1/operations/snapshot-sources?sourceType=PAIMON
 
 task snapshot 证据从 V23 起独立保存 `sourceHealth`、`sourceHealthDetail` 和 `sourceEvidenceCheckedAt`，不再要求运维查询解析 `waitingReason` 文本。`TaskInstance`、Action detail 和统一 blockers 都复用这组结构化证据；`SNAPSHOT_NOT_ADVANCED` 只会同时记录确认窗口之后的 `HEALTHY` source 证据，source 缺口则保持 `SCHEDULED + SOURCE_BLOCKED/REPAIRABLE`。
 
-核心指标包括 `lakehouse_flow_scheduling_decision_plan_inspections_total`、`lakehouse_flow_scheduling_decision_trigger_evaluations_total`、`lakehouse_flow_scheduling_decision_trigger_evaluation_duration_seconds`、`lakehouse_flow_scheduling_backlog_task_instances`、`lakehouse_flow_scheduling_backlog_backfill_blocked_items`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_scheduling_intent_delivery_records`、`lakehouse_flow_snapshot_source_scans_total`、`lakehouse_flow_snapshot_source_offsets_pending`、`lakehouse_flow_snapshot_source_retention_gap` 和 `lakehouse_flow_snapshot_source_projection_inconsistent`。调度决策 metric 只使用检查/决策结果等低基数 tag，Flow、asset、snapshot 和 trigger 标识留在结构化日志与 `TriggerHistory`。task backlog 只统计 `CREATED`、`WAITING_SNAPSHOT`、`READY_TO_SCHEDULE`、`SCHEDULED` 四个非终态，其中 `SCHEDULED` 表示意图已发布并等待目标 snapshot；补数阻塞只使用 `DATE_CONCURRENCY` 和 `DAG_DEPENDENCY`。delivery 指标只表示传输状态；`EXHAUSTED` 仍不是 task 失败。
+核心指标包括 `lakehouse_flow_scheduling_decision_plan_inspections_total`、`lakehouse_flow_scheduling_decision_trigger_evaluations_total`、`lakehouse_flow_scheduling_backlog_task_instances`、`lakehouse_flow_scheduling_intent_delivery_publisher_attempts_total`、`lakehouse_flow_job_control_intent_delivery_publisher_attempts_total`、两类 delivery records，以及 snapshot source scan/offset/retention/projection 指标。数据处理与 job-control delivery 使用独立前缀，START/RESTART 传输问题不会混入数据 intent。调度决策 metric 只使用检查/决策结果等低基数 tag，Flow、asset、snapshot 和 trigger 标识留在结构化日志与 `TriggerHistory`。task backlog 只统计 `CREATED`、`WAITING_SNAPSHOT`、`READY_TO_SCHEDULE`、`SCHEDULED` 四个非终态，其中 `SCHEDULED` 表示意图已发布并等待目标 snapshot；delivery 指标只表示传输状态，`EXHAUSTED` 仍不是 task 失败。
 
-Prometheus 初始告警基线如下，投产后应按扫描周期、Flow 数量和确认窗口校准：
+Prometheus 初始告警基线已交付在 [deploy/prometheus/lakehouse-flow-alerts.yml](./deploy/prometheus/lakehouse-flow-alerts.yml)，使用方式、指标契约、关闭条件和证据入口见 [OBSERVABILITY.md](./OBSERVABILITY.md)。投产后应按扫描周期、Flow 数量和确认窗口校准：
 
 1. P1：5 分钟内 `decision="failed"` 增量大于 0，表示调度评估事务失败关闭。
 2. P1：`retention_gap` 或 `projection_inconsistent` 连续 5 分钟大于 0，表示 source 事实或 AssetState 投影不可信。
-3. P2：任一 `status="EXHAUSTED"` delivery 连续 15 分钟大于 0，表示调度意图已进入传输死信。
+3. P2：任一 delivery attempt 新增 `outcome="exhausted"`，表示对应 intent 家族出现新的传输死信；持久化死信库存不用于持续重复报警。
 4. P2：`state="READY_TO_SCHEDULE"` backlog 连续 15 分钟大于 0，优先检查 publisher、版本并发上限和目标日期准入。
 5. P2：`state="SCHEDULED"` backlog 连续超过确认超时的 75% 仍大于 0；默认 `PT1H` 下可先取 45 分钟，检查下游提交及 snapshot source。
 
@@ -319,7 +319,6 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 ## 下一步建议
 
 1. LF-1.0 真实 Paimon 闭环与 PostgreSQL 高可用恢复已经完成：普通 DAG、重启、Node 子图补数、双 scheduler 竞争和中断恢复均已验收。
-2. 补齐 OBS-2 的可部署 Prometheus 告警规则和排障证据链接。
-3. 在同一整体 E2E 中验收剩余 action、`DATABASE_TABLE` 正式投递、HTTP 耗尽路径、四种结果语义和流批边界。
-4. 基于集中 E2E 反馈冻结 1.0 REST、intent payload、schema 和兼容策略。
-5. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
+2. 在同一整体 E2E 中验收剩余 action、`DATABASE_TABLE` 正式投递、HTTP 耗尽路径、四种结果语义和流批边界。
+3. 基于集中 E2E 反馈冻结 1.0 REST、intent payload、schema 和兼容策略。
+4. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。

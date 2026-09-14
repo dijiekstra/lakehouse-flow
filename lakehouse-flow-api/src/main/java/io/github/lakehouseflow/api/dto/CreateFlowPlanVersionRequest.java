@@ -1,5 +1,7 @@
 package io.github.lakehouseflow.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.Map;
 
 /**
@@ -12,6 +14,7 @@ import java.util.Map;
  * @param confirmationPolicyJson snapshot confirmation policy
  * @param concurrencyPolicyJson scheduler-side concurrency policy
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateFlowPlanVersionRequest(
         Integer version,
         Map<String, Object> graphJson,

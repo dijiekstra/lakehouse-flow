@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lakehouse-flow:contract:job-control-intent:1.0",
+  "title": "Lakehouse Flow JobControlIntent 1.0",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "contractVersion",
+    "source",
+    "intentKind",
+    "intentKey",
+    "issuedAt",
+    "writer",
+    "control",
+    "snapshotObservation"
+  ],
+  "properties": {
+    "contractVersion": { "const": "1.0" },
+    "source": { "const": "LAKEHOUSE_FLOW" },
+    "intentKind": { "const": "JOB_CONTROL" },
+    "intentKey": { "type": "string", "minLength": 1 },
+    "issuedAt": { "type": "string", "minLength": 1 },
+    "writer": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "writerJobKey",
+        "tableAssetKey",
+        "writerEpoch",
+        "previousWriterEpoch",
+        "processingMode"
+      ],
+      "properties": {
+        "writerJobKey": { "type": "string", "minLength": 1 },
+        "tableAssetKey": { "type": "string", "minLength": 1 },
+        "writerEpoch": { "type": "integer", "minimum": 1 },
+        "previousWriterEpoch": { "type": "integer", "minimum": 0 },
+        "processingMode": { "const": "STREAMING" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["operationType", "reason", "requestedBy", "deliverBefore"],
+      "properties": {
+        "operationType": { "enum": ["START_JOB", "RESTART_JOB"] },
+        "reason": { "type": ["string", "null"] },
+        "requestedBy": { "type": "string", "minLength": 1 },
+        "deliverBefore": { "type": "string", "minLength": 1 }
+      }
+    },
+    "snapshotObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "targetTableAssetKey",
+        "baselineSnapshotId",
+        "confirmationTimeout",
+        "requiredWriterProperties"
+      ],
+      "properties": {
+        "targetTableAssetKey": { "type": "string", "minLength": 1 },
+        "baselineSnapshotId": { "type": ["string", "null"] },
+        "confirmationTimeout": { "type": "string", "minLength": 1 },
+        "requiredWriterProperties": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "lakehouse-flow.source",
+            "lakehouse-flow.job-control-intent-key",
+            "lakehouse-flow.writer-job-key",
+            "lakehouse-flow.writer-epoch"
+          ],
+          "properties": {
+            "lakehouse-flow.source": { "const": "LAKEHOUSE_FLOW" },
+            "lakehouse-flow.job-control-intent-key": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.writer-job-key": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.writer-epoch": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

@@ -21,6 +21,19 @@ import static org.mockito.Mockito.when;
  */
 class SchedulingIntentDeliveryMetricsTest {
 
+    /** Verify the first exhausted delivery can increase from a registered zero series. */
+    @Test
+    void constructorRegistersExhaustedSeries() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        new SchedulingIntentDeliveryMetrics(registry, mock(SchedulingIntentDeliveryRepository.class));
+
+        assertEquals(0.0, registry.get("lakehouse.flow.scheduling.intent.delivery.publisher.attempts")
+                .tags("channel", "HTTP", "outcome", "exhausted")
+                .counter()
+                .count());
+    }
+
     /** Verify one transport attempt increments its tagged counter and timer. */
     @Test
     void recordAttemptPublishesMicrometerEvidence() {

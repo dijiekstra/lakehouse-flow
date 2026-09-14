@@ -37,7 +37,7 @@ class HttpSchedulingIntentPublisherTest {
     @InjectMocks
     private HttpSchedulingIntentPublisher publisher;
 
-    /** Verify HTTP publication sends the exact instruction body and idempotency metadata. */
+    /** Verify HTTP publication preserves an older same-major version and idempotency metadata. */
     @Test
     @SuppressWarnings("unchecked")
     void publishPostsImmutableInstructionPayload() {
@@ -53,6 +53,9 @@ class HttpSchedulingIntentPublisherTest {
                 headers.capture(),
                 body.capture());
         assertEquals("task-instance:22", headers.getValue().get("Idempotency-Key"));
+        assertEquals("task-instance:22", headers.getValue().get("X-Lakehouse-Flow-Intent-Key"));
+        assertEquals("1.2", headers.getValue().get("X-Lakehouse-Flow-Contract-Version"));
+        assertEquals("201", headers.getValue().get("X-Lakehouse-Flow-Delivery-Id"));
         assertEquals("{\"intentKey\":\"task-instance:22\"}",
                 new String(body.getValue(), StandardCharsets.UTF_8));
     }

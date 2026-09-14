@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lakehouse-flow:contract:scheduling-intent:1.3",
+  "title": "Lakehouse Flow SchedulingIntent 1.3",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "contractVersion",
+    "source",
+    "intentKind",
+    "intentKey",
+    "issuedAt",
+    "identity",
+    "definition",
+    "writer",
+    "schedule",
+    "processing",
+    "schedulingPolicy",
+    "publicationAdmission",
+    "snapshotEvidence"
+  ],
+  "properties": {
+    "contractVersion": { "const": "1.3" },
+    "source": { "const": "LAKEHOUSE_FLOW" },
+    "intentKind": { "const": "DATA_PROCESSING" },
+    "intentKey": { "type": "string", "minLength": 1 },
+    "issuedAt": { "type": "string", "minLength": 1 },
+    "identity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["taskInstanceId", "workflowInstanceId", "flowPlanVersionId", "scheduleNodeId"],
+      "properties": {
+        "taskInstanceId": { "type": "integer", "minimum": 1 },
+        "workflowInstanceId": { "type": "integer", "minimum": 1 },
+        "flowPlanVersionId": { "type": ["integer", "null"], "minimum": 1 },
+        "scheduleNodeId": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "definition": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workflowCode", "workflowVersion", "taskCode", "taskVersion"],
+      "properties": {
+        "workflowCode": { "type": "string", "minLength": 1 },
+        "workflowVersion": { "type": "integer", "minimum": 1 },
+        "taskCode": { "type": "string", "minLength": 1 },
+        "taskVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "writer": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["writerJobKey", "writerEpoch", "tableAssetKey"],
+      "properties": {
+        "writerJobKey": { "type": "string", "minLength": 1 },
+        "writerEpoch": { "type": "integer", "minimum": 1 },
+        "tableAssetKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "triggerType",
+        "triggerEventId",
+        "triggerReason",
+        "bizDate",
+        "backfillBatchId",
+        "backfillItemId"
+      ],
+      "properties": {
+        "triggerType": { "type": "string", "minLength": 1 },
+        "triggerEventId": { "type": ["string", "null"] },
+        "triggerReason": { "type": ["string", "null"] },
+        "bizDate": { "type": "string", "format": "date" },
+        "backfillBatchId": { "type": ["integer", "null"], "minimum": 1 },
+        "backfillItemId": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["processingMode", "inputSnapshotVector"],
+      "properties": {
+        "processingMode": { "enum": ["STREAMING", "BATCH"] },
+        "inputSnapshotVector": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "parentNodeCode",
+              "parentProcessingMode",
+              "evidenceSource",
+              "assetKey",
+              "snapshotId",
+              "watermark",
+              "upstreamTaskInstanceId",
+              "observedAt"
+            ],
+            "properties": {
+              "parentNodeCode": { "type": ["string", "null"] },
+              "parentProcessingMode": { "enum": ["STREAMING", "BATCH", null] },
+              "evidenceSource": {
+                "enum": ["ASSET_SNAPSHOT", "SCHEDULE_INSTANCE_OUTPUT", "EXTERNAL_ASSET"]
+              },
+              "assetKey": { "type": "string", "minLength": 1 },
+              "snapshotId": { "type": ["string", "null"] },
+              "watermark": { "type": ["string", "null"] },
+              "upstreamTaskInstanceId": { "type": ["integer", "null"], "minimum": 1 },
+              "observedAt": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "schedulingPolicy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["concurrencyMode", "maxActiveInstances"],
+      "properties": {
+        "concurrencyMode": { "type": "string", "minLength": 1 },
+        "maxActiveInstances": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "publicationAdmission": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["targetAssetKey", "bizDate", "holderIntentKey", "leaseExpiresAt"],
+      "properties": {
+        "targetAssetKey": { "type": "string", "minLength": 1 },
+        "bizDate": { "type": "string", "format": "date" },
+        "holderIntentKey": { "type": "string", "minLength": 1 },
+        "leaseExpiresAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "snapshotEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "mode",
+        "targetAssetKey",
+        "baselineSnapshotId",
+        "confirmationTimeout",
+        "expectedPartition",
+        "requiredSnapshotChangeType",
+        "requiredSnapshotProperties"
+      ],
+      "properties": {
+        "mode": { "const": "INTENT_CORRELATED" },
+        "targetAssetKey": { "type": "string", "minLength": 1 },
+        "baselineSnapshotId": { "type": ["string", "null"] },
+        "confirmationTimeout": { "type": "string", "minLength": 1 },
+        "expectedPartition": { "type": ["string", "null"] },
+        "requiredSnapshotChangeType": { "const": "DATA" },
+        "requiredSnapshotProperties": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "lakehouse-flow.source",
+            "lakehouse-flow.intent-key",
+            "lakehouse-flow.writer-job-key",
+            "lakehouse-flow.writer-epoch",
+            "lakehouse-flow.target-asset",
+            "lakehouse-flow.biz-date",
+            "lakehouse-flow.final"
+          ],
+          "properties": {
+            "lakehouse-flow.source": { "const": "LAKEHOUSE_FLOW" },
+            "lakehouse-flow.intent-key": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.writer-job-key": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.writer-epoch": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.target-asset": { "type": "string", "minLength": 1 },
+            "lakehouse-flow.biz-date": { "type": "string", "format": "date" },
+            "lakehouse-flow.final": { "const": "true" }
+          }
+        }
+      }
+    }
+  }
+}

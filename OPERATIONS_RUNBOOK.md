@@ -2,7 +2,7 @@
 
 **适用版本**: LF-1.0，数据库 schema V23
 
-本文档是单团队受信环境下的生产接入和故障处置手册。数据库升级、恢复与数据保留见 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)，下游 payload 和幂等要求见 [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md)。
+本文档是单团队受信环境下的生产接入和故障处置手册。数据库升级、恢复与数据保留见 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)，指标和告警见 [OBSERVABILITY.md](./OBSERVABILITY.md)，下游 payload 和幂等要求见 [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md)。
 
 ## 1. 运维边界
 
@@ -193,7 +193,7 @@ RESTART 会分配更大的 `writerEpoch`。执行面必须先让旧 epoch 失去
 
 使用 `GET /api/v1/job-control-intents/{intentKey}` 分别检查 delivery、source 和 snapshot 三类证据，不查询 Flink 状态来替代 snapshot 结论。
 
-## 6. 日常巡检
+## 6. Daily inspection
 
 ```bash
 curl --fail 'https://lakehouse-flow.example/actuator/health'
@@ -219,7 +219,17 @@ curl --fail 'https://lakehouse-flow.example/api/v1/job-control-intent-deliveries
 
 ## 7. 故障处置
 
-### 7.1 SOURCE_BLOCKED
+### 7.1 Decision failure
+
+1. 从 `LakehouseFlowDecisionFailure` 的时间范围定位 scheduler 结构化日志，搜索 `decision=FAILED` 和对应异常栈。
+2. 记录失败的 source、asset、snapshot、FlowPlanVersion 和应用实例，不把指标标签扩展为这些高基数字段。
+3. 检查失败事务是否已回滚，确认 durable offset 没有越过失败 snapshot，且没有部分 intent 或实例被手工补写。
+4. 修复配置、数据库或代码问题后，让 source scanner 从 durable offset 自动重试；已经持久化但投影不完整的事件交给 reconciliation 重放。
+5. 确认新的评估产生完整 `TriggerHistory`、实例和 intent，随后观察 5 分钟内不再出现新的 `decision="failed"` 增量。
+
+调度决策失败表示 Lakehouse Flow 自身失败关闭，不表示下游执行失败，也不能通过直接插入 intent 绕过。
+
+### 7.2 SOURCE_BLOCKED
 
 1. 使用 snapshot source API 按 source 或目标资产定位 `sourceHealthDetail` 和 `checkedAt`。
 2. 检查 Paimon catalog 可用性、snapshot earliest/latest、对象存储权限和 metastore 连通性。
@@ -230,7 +240,7 @@ curl --fail 'https://lakehouse-flow.example/api/v1/job-control-intent-deliveries
 
 `SOURCE_BLOCKED` 期间 snapshot 结果保持待定。它不证明下游没有完成写入。
 
-### 7.2 DELIVERY_EXHAUSTED
+### 7.3 DELIVERY_EXHAUSTED
 
 1. 从对应 dead-letter API 保存 `intentKey`、channel、destination、attemptCount、lastError 和 `deadLetteredAt`。
 2. 修复 DNS、TLS、认证、endpoint、数据库消费者或 2xx ACK 行为，并确认下游仍按 `intentKey` 幂等。
@@ -239,11 +249,11 @@ curl --fail 'https://lakehouse-flow.example/api/v1/job-control-intent-deliveries
 5. JobControlIntent 使用新的 request key 发起 RESTART，分配新 epoch；不得重放已过期的旧 START/RESTART。
 6. 如果目标 snapshot 已经由原 intent 推进，先核对归因证据，不要仅因为 delivery 死信重复生产数据。
 
-### 7.3 SNAPSHOT_NOT_ADVANCED
+### 7.4 SNAPSHOT_NOT_ADVANCED
 
 该结果只能在确认窗口结束且 source 为 `HEALTHY` 时产生。先核对 intent 的 baseline、目标资产、业务日期和 required snapshot properties，再决定使用 recheck、rerun 或 backfill。不能把它解释为 Flink/Spark 任务失败，也不能通过手工推进 AssetState 关闭事件。
 
-### 7.4 Scheduler 进程中断或节点丢失
+### 7.5 Scheduler 进程中断或节点丢失
 
 1. 保留至少一个连接同一 PostgreSQL 的 scheduler 节点。
 2. 不清理 `PUBLISHING` claim；等待 `claimExpiresAt` 后由其他节点重占。

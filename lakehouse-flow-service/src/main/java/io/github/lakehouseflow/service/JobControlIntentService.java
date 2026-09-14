@@ -221,7 +221,7 @@ public class JobControlIntentService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("contractVersion", JobControlIntentContract.CONTRACT_VERSION);
         payload.put("source", SnapshotEvidenceContract.INTENT_SOURCE);
-        payload.put("intentKind", "JOB_CONTROL");
+        payload.put("intentKind", JobControlIntentContract.INTENT_KIND);
         payload.put("intentKey", allocation.intentKey());
         payload.put("issuedAt", issuedAt.toString());
         payload.put("writer", writer);

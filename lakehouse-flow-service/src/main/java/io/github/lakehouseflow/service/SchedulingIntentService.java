@@ -4,6 +4,7 @@ import io.github.lakehouseflow.common.BackfillBatchStatuses;
 import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
+import io.github.lakehouseflow.common.SchedulingIntentContract;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.dao.BackfillBatchRepository;
@@ -311,7 +312,7 @@ public class SchedulingIntentService {
                 effectivePolicy,
                 now);
         SchedulingIntent intent = schedulingIntentRepository.save(SchedulingIntent.builder()
-                .contractVersion(SnapshotEvidenceContract.CONTRACT_VERSION)
+                .contractVersion(SchedulingIntentContract.CONTRACT_VERSION)
                 .intentKey(intentKey)
                 .taskInstanceId(task.getId())
                 .workflowInstanceId(task.getWorkflowInstanceId())
@@ -697,9 +698,9 @@ public class SchedulingIntentService {
         processing.put("inputSnapshotVector", inputSnapshotVector);
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION);
+        payload.put("contractVersion", SchedulingIntentContract.CONTRACT_VERSION);
         payload.put("source", SnapshotEvidenceContract.INTENT_SOURCE);
-        payload.put("intentKind", "DATA_PROCESSING");
+        payload.put("intentKind", SchedulingIntentContract.INTENT_KIND);
         payload.put("intentKey", intentKey);
         payload.put("issuedAt", issuedAt.toString());
         payload.put("identity", identity);

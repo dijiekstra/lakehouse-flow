@@ -9,8 +9,14 @@ package io.github.lakehouseflow.common;
  */
 public final class SnapshotEvidenceContract {
 
-    /** Current version of the scheduling-intent payload contract. */
-    public static final String CONTRACT_VERSION = "1.3";
+    /**
+     * Current scheduling-intent version retained for source compatibility.
+     *
+     * @deprecated use {@link SchedulingIntentContract#CONTRACT_VERSION}; snapshot evidence
+     * does not own the outbound payload version
+     */
+    @Deprecated(forRemoval = false, since = "1.0")
+    public static final String CONTRACT_VERSION = SchedulingIntentContract.CONTRACT_VERSION;
 
     /** Producer identity written into every scheduling-intent payload. */
     public static final String INTENT_SOURCE = "LAKEHOUSE_FLOW";

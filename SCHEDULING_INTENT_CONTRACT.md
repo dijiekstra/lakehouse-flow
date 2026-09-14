@@ -1,10 +1,10 @@
 # Outbound Intent 下游契约
 
-**当前 SchedulingIntent 契约版本**: 1.3；真实 Flink/Paimon 普通与 Node 补数链路、HTTP 中断重投和双 scheduler 恢复已验证，尚待 DATABASE_TABLE、剩余 action 与兼容性验收后冻结
+**当前 SchedulingIntent 契约版本**: 1.3；字段与兼容策略已形成开发冻结候选，最终冻结等待整体 E2E
 **LF-1.0 目标 SchedulingIntent 契约版本**: 1.3
-**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；G20 START/RESTART、checkpoint 恢复、旧 epoch fencing 与 PostgreSQL 高可用矩阵已通过，尚待正式投递和兼容性验收后冻结
+**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；字段与兼容策略已形成开发冻结候选，最终冻结等待整体 E2E
 **适用通道**: Database Outbox、HTTP、MQ
-**LF-1.0 状态**: 数据处理契约 1.3 与作业控制契约 1.0 已实现；真实 Paimon 闭环和 PostgreSQL 高可用恢复已通过，待 DATABASE_TABLE、剩余 action、最小运维查询与兼容性验收后冻结
+**LF-1.0 状态**: 两类契约的 JSON Schema、REST surface、未知字段和 migration 兼容回归已完成；DATABASE_TABLE、剩余 action 与流批边界留待整体 E2E 后正式冻结
 
 ## 1. 契约目标
 
@@ -22,6 +22,13 @@ Lakehouse Flow 只负责产生和投递出站意图，不执行任务，也不�
 数据库、HTTP 和 MQ 必须传输完全相同的 `instructionPayload`。传输 ACK 只证明消息送达，不能确认任务成功。
 
 `LF-1.0` 正式交付仅承诺 `DATABASE_TABLE + HTTP`。MQ 继续遵守同一 payload 和 publisher SPI，但具体 broker 绑定不属于 1.0 必选实现。
+
+机器可读 Schema 位于：
+
+- [SchedulingIntent 1.3](./lakehouse-flow-boot/src/main/resources/contracts/lakehouse-flow/lf-1.0/scheduling-intent-1.3.schema.json)
+- [JobControlIntent 1.0](./lakehouse-flow-boot/src/main/resources/contracts/lakehouse-flow/lf-1.0/job-control-intent-1.0.schema.json)
+
+同 major 只允许增加可选字段，接收方必须忽略未知字段；删除、重命名、类型变化或幂等/归因语义变化必须升级 major。完整 REST、payload、下游幂等与 migration 兼容策略见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)。
 
 ## 2. 数据处理指令结构
 
@@ -66,7 +73,9 @@ Lakehouse Flow 只负责产生和投递出站意图，不执行任务，也不�
         "evidenceSource": "ASSET_SNAPSHOT",
         "assetKey": "paimon.ods.orders.dt=2026-09-01",
         "snapshotId": "812",
-        "watermark": "2026-09-01T23:59:59"
+        "watermark": "2026-09-01T23:59:59",
+        "upstreamTaskInstanceId": null,
+        "observedAt": "2026-09-13T10:29:58"
       },
       {
         "parentNodeCode": "payments-daily",
@@ -75,7 +84,8 @@ Lakehouse Flow 只负责产生和投递出站意图，不执行任务，也不�
         "upstreamTaskInstanceId": 41,
         "assetKey": "paimon.ods.payments.dt=2026-09-01",
         "snapshotId": "433",
-        "watermark": "2026-09-01T23:59:59"
+        "watermark": "2026-09-01T23:59:59",
+        "observedAt": "2026-09-13T10:29:55"
       }
     ]
   },

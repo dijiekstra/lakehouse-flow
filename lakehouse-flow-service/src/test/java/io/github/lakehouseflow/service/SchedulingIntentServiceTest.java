@@ -4,6 +4,7 @@ import io.github.lakehouseflow.common.BackfillBatchStatuses;
 import io.github.lakehouseflow.common.BackfillItemStatuses;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
+import io.github.lakehouseflow.common.SchedulingIntentContract;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.dao.BackfillBatchRepository;
@@ -220,7 +221,7 @@ class SchedulingIntentServiceTest {
 
         assertEquals(101L, result.intentId());
         assertEquals("task-instance:22", result.intentKey());
-        assertEquals(SnapshotEvidenceContract.CONTRACT_VERSION, result.contractVersion());
+        assertEquals(SchedulingIntentContract.CONTRACT_VERSION, result.contractVersion());
         assertEquals("SNAPSHOT", result.triggerType());
         assertEquals("100", result.baselineSnapshotId());
         assertEquals("BATCH", result.processingMode());
@@ -252,7 +253,7 @@ class SchedulingIntentServiceTest {
         assertEquals("100", intentCaptor.getValue().getBaselineSnapshotId());
         assertEquals("BATCH", intentCaptor.getValue().getProcessingMode());
         assertEquals(1, intentCaptor.getValue().getInputSnapshotVectorJson().size());
-        assertEquals(SnapshotEvidenceContract.CONTRACT_VERSION,
+        assertEquals(SchedulingIntentContract.CONTRACT_VERSION,
                 intentCaptor.getValue().getContractVersion());
         assertRequiredSnapshotProperties(
                 intentCaptor.getValue().getInstructionPayloadJson(),
@@ -261,6 +262,7 @@ class SchedulingIntentServiceTest {
                 intentCaptor.getValue().getInstructionPayloadJson(),
                 "task-instance:22");
         assertProcessingBoundary(intentCaptor.getValue().getInstructionPayloadJson());
+        assertFrozenDataContractShape(intentCaptor.getValue().getInstructionPayloadJson());
     }
 
     /** Verify an HTTP route creates pending transport evidence for the internal publisher. */
@@ -648,7 +650,7 @@ class SchedulingIntentServiceTest {
     private SchedulingIntent intent() {
         return SchedulingIntent.builder()
                 .id(101L)
-                .contractVersion(SnapshotEvidenceContract.CONTRACT_VERSION)
+                .contractVersion(SchedulingIntentContract.CONTRACT_VERSION)
                 .intentKey("task-instance:22")
                 .taskInstanceId(22L)
                 .workflowInstanceId(11L)
@@ -664,7 +666,7 @@ class SchedulingIntentServiceTest {
                 .writerEpoch(3L)
                 .processingMode("BATCH")
                 .inputSnapshotVectorJson(List.of())
-                .instructionPayloadJson(Map.of("contractVersion", SnapshotEvidenceContract.CONTRACT_VERSION))
+                .instructionPayloadJson(Map.of("contractVersion", SchedulingIntentContract.CONTRACT_VERSION))
                 .createdAt(LocalDateTime.of(2026, 9, 13, 1, 0))
                 .build();
     }
@@ -728,6 +730,50 @@ class SchedulingIntentServiceTest {
         assertEquals(confirmationTimeout, snapshotEvidence.get("confirmationTimeout"));
         assertEquals(concurrencyMode, schedulingPolicy.get("concurrencyMode"));
         assertEquals(maxActiveInstances, schedulingPolicy.get("maxActiveInstances"));
+    }
+
+    /** Verify the generated 1.3 payload retains every frozen object member. */
+    @SuppressWarnings("unchecked")
+    private void assertFrozenDataContractShape(Map<String, Object> payload) {
+        assertEquals(Set.of(
+                "contractVersion", "source", "intentKind", "intentKey", "issuedAt",
+                "identity", "definition", "writer", "schedule", "processing",
+                "schedulingPolicy", "publicationAdmission", "snapshotEvidence"), payload.keySet());
+        assertEquals(Set.of("taskInstanceId", "workflowInstanceId", "flowPlanVersionId", "scheduleNodeId"),
+                ((Map<String, Object>) payload.get("identity")).keySet());
+        assertEquals(Set.of("workflowCode", "workflowVersion", "taskCode", "taskVersion"),
+                ((Map<String, Object>) payload.get("definition")).keySet());
+        assertEquals(Set.of("writerJobKey", "writerEpoch", "tableAssetKey"),
+                ((Map<String, Object>) payload.get("writer")).keySet());
+        assertEquals(Set.of(
+                "triggerType", "triggerEventId", "triggerReason", "bizDate",
+                "backfillBatchId", "backfillItemId"),
+                ((Map<String, Object>) payload.get("schedule")).keySet());
+        Map<String, Object> processing = (Map<String, Object>) payload.get("processing");
+        assertEquals(Set.of("processingMode", "inputSnapshotVector"), processing.keySet());
+        List<Map<String, Object>> vector = (List<Map<String, Object>>) processing.get("inputSnapshotVector");
+        assertEquals(Set.of(
+                "parentNodeCode", "parentProcessingMode", "evidenceSource", "assetKey",
+                "snapshotId", "watermark", "upstreamTaskInstanceId", "observedAt"),
+                vector.get(0).keySet());
+        assertEquals(Set.of("concurrencyMode", "maxActiveInstances"),
+                ((Map<String, Object>) payload.get("schedulingPolicy")).keySet());
+        assertEquals(Set.of("targetAssetKey", "bizDate", "holderIntentKey", "leaseExpiresAt"),
+                ((Map<String, Object>) payload.get("publicationAdmission")).keySet());
+        Map<String, Object> evidence = (Map<String, Object>) payload.get("snapshotEvidence");
+        assertEquals(Set.of(
+                "mode", "targetAssetKey", "baselineSnapshotId", "confirmationTimeout",
+                "expectedPartition", "requiredSnapshotChangeType", "requiredSnapshotProperties"),
+                evidence.keySet());
+        assertEquals(Set.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY,
+                SnapshotEvidenceContract.INTENT_KEY_PROPERTY,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY,
+                SnapshotEvidenceContract.TARGET_ASSET_PROPERTY,
+                SnapshotEvidenceContract.BIZ_DATE_PROPERTY,
+                SnapshotEvidenceContract.FINAL_PROPERTY),
+                ((Map<String, String>) evidence.get("requiredSnapshotProperties")).keySet());
     }
 
     /** Build one database-outbox delivery record for audit tests. */

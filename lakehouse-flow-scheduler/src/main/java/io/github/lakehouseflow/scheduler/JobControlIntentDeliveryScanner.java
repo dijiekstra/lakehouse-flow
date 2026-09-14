@@ -30,7 +30,7 @@ public class JobControlIntentDeliveryScanner {
 
     private final JobControlIntentDeliveryService deliveryService;
     private final List<SchedulingIntentPublisher> publishers;
-    private final SchedulingIntentDeliveryMetrics deliveryMetrics;
+    private final JobControlIntentDeliveryMetrics deliveryMetrics;
 
     private final String generatedOwner = "job-control-scheduler-" + UUID.randomUUID();
 

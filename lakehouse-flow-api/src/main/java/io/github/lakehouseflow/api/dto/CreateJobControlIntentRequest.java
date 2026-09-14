@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 
 /**
@@ -9,6 +10,7 @@ import jakarta.validation.constraints.NotBlank;
  * @param requestedBy operator or system audit identity
  * @param reason optional operation reason
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateJobControlIntentRequest(
         @NotBlank String requestKey,
         @NotBlank String requestedBy,

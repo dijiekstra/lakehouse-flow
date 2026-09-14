@@ -21,6 +21,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -89,6 +90,7 @@ class JobControlIntentServiceTest {
         assertEquals(SchedulingIntentDeliveryStatuses.PUBLISHED, result.deliveryStatus());
         assertEquals("811", result.baselineSnapshotId());
         assertRequiredWriterProperties(result.instructionPayload(), result.intentKey(), "1");
+        assertFrozenJobControlContractShape(result.instructionPayload());
         assertTrue(!result.instructionPayload().containsKey("identity"));
         assertTrue(!result.instructionPayload().containsKey("schedule"));
     }
@@ -160,6 +162,30 @@ class JobControlIntentServiceTest {
         assertEquals("writer.orders", properties.get(SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY));
         assertEquals(epoch, properties.get(SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY));
         assertNotNull(observation.get("confirmationTimeout"));
+    }
+
+    /** Verify the generated 1.0 job-control payload retains every frozen object member. */
+    @SuppressWarnings("unchecked")
+    private void assertFrozenJobControlContractShape(Map<String, Object> payload) {
+        assertEquals(Set.of(
+                "contractVersion", "source", "intentKind", "intentKey", "issuedAt",
+                "writer", "control", "snapshotObservation"), payload.keySet());
+        assertEquals(Set.of(
+                "writerJobKey", "tableAssetKey", "writerEpoch",
+                "previousWriterEpoch", "processingMode"),
+                ((Map<String, Object>) payload.get("writer")).keySet());
+        assertEquals(Set.of("operationType", "reason", "requestedBy", "deliverBefore"),
+                ((Map<String, Object>) payload.get("control")).keySet());
+        Map<String, Object> observation = (Map<String, Object>) payload.get("snapshotObservation");
+        assertEquals(Set.of(
+                "targetTableAssetKey", "baselineSnapshotId",
+                "confirmationTimeout", "requiredWriterProperties"), observation.keySet());
+        assertEquals(Set.of(
+                SnapshotEvidenceContract.SOURCE_PROPERTY,
+                SnapshotEvidenceContract.JOB_CONTROL_INTENT_KEY_PROPERTY,
+                SnapshotEvidenceContract.WRITER_JOB_KEY_PROPERTY,
+                SnapshotEvidenceContract.WRITER_EPOCH_PROPERTY),
+                ((Map<String, String>) observation.get("requiredWriterProperties")).keySet());
     }
 
     /** Build a registered streaming writer fixture. */

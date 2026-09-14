@@ -1,9 +1,9 @@
 package io.github.lakehouseflow.api;
 
 import io.github.lakehouseflow.api.dto.TaskSchedulingIntentResponse;
+import io.github.lakehouseflow.common.SchedulingIntentContract;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
-import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.service.SchedulingIntentService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,7 +45,7 @@ class SchedulingIntentControllerTest {
         assertNotNull(response.getBody());
         assertEquals(101L, response.getBody().intentId());
         assertEquals("task-instance:22", response.getBody().intentKey());
-        assertEquals(SnapshotEvidenceContract.CONTRACT_VERSION, response.getBody().contractVersion());
+        assertEquals(SchedulingIntentContract.CONTRACT_VERSION, response.getBody().contractVersion());
         assertEquals("SNAPSHOT", response.getBody().triggerType());
         assertEquals("task-instance:22", response.getBody().instructionPayload().get("intentKey"));
         assertEquals(SchedulingIntentDeliveryChannels.DATABASE_TABLE, response.getBody().deliveryChannel());
@@ -68,7 +68,7 @@ class SchedulingIntentControllerTest {
     private SchedulingIntentService.TaskSchedulingIntent intent() {
         return new SchedulingIntentService.TaskSchedulingIntent(
                 101L,
-                SnapshotEvidenceContract.CONTRACT_VERSION,
+                SchedulingIntentContract.CONTRACT_VERSION,
                 "task-instance:22",
                 22L,
                 11L,

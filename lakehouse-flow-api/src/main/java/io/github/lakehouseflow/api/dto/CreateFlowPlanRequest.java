@@ -1,5 +1,6 @@
 package io.github.lakehouseflow.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 
 /**
@@ -11,6 +12,7 @@ import jakarta.validation.constraints.NotBlank;
  * @param owner Flow owner
  * @param description human-readable description
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateFlowPlanRequest(
         @NotBlank String flowCode,
         @NotBlank String flowName,
