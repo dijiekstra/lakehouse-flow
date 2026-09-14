@@ -1,6 +1,6 @@
 # LF-1.0 契约与兼容策略
 
-**状态**: 开发冻结候选已完成，最终冻结等待整体 Testcontainers E2E
+**状态**: 已冻结；2026-09-14 整体 Testcontainers E2E 验收通过
 
 本文档定义 LF-1.0 的 REST、出站 intent 和 PostgreSQL migration 兼容边界。它不改变 Lakehouse Flow 的职责：系统只产生调度或作业控制意图，并通过可归因目标 snapshot 判断结果，不读取下游执行状态。
 
@@ -81,6 +81,6 @@ delivery ACK 只记录传输成功。上述幂等规则都不能用下游 `SUCCE
 2. 更新机器可读 surface/schema 和语义文档。
 3. 更新生成 payload、请求未知字段、实际 Spring 路由和 migration checksum 回归。
 4. 使用 JDK 17 运行 `./mvnw clean verify -DskipITs`。
-5. 在 LF-1.0 最终验收时统一运行整体 Testcontainers E2E，验证 DB/HTTP 投递、全部 action、结果语义、流批汇聚和升级路径。
+5. 任何冻结边界变更都必须重新运行整体 Testcontainers E2E，验证 DB/HTTP 投递、全部 action、结果语义、流批汇聚和升级路径。
 
-开发测试通过只表示冻结候选内部一致；只有最后一轮整体 E2E 通过后，才能把 STB-5 标记为正式冻结。
+2026-09-14 使用 JDK 17.0.12 执行 `./mvnw clean verify`：396 个单元/启动测试和 8 个整体 E2E 全部通过。E2E 包含两类 intent 的 `DATABASE_TABLE` 与 HTTP 交付、完整 action、流式 writer 受控补数切换、四类正交结果，以及 Flyway V22 到 V23 真实升级；STB-5 因此正式冻结。

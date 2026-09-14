@@ -5,7 +5,7 @@
 
 Lakehouse Flow 是一个面向 CDC 湖仓的 **snapshot 推进式调度原型**。它的核心目标是把调度判断从固定 cron 时间推进到“数据资产版本已经到达且状态满足条件”。
 
-当前仓库还不是生产就绪系统。它已经具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递已具备 claim 租约、fencing、退避重试和死信审计。`LF-1.0` 将面向单团队受信环境，以 Flink CDC 持续流式写入 ODS、DWD/DWS/ADS 流批一体 writer-side adapter、真实 Paimon 闭环、`DATABASE_TABLE + HTTP` 投递和整体 Testcontainers E2E 作为发布门槛。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，契约演进见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
+当前仓库已经通过 `LF-1.0` 单团队受信环境的功能与稳定性门槛，但仍需在真实部署中形成容量基线。它具备领域模型、PostgreSQL/Flyway 表结构、格式无关的 snapshot source SPI、Paimon Catalog API 适配器、原子事件投影、资产状态单调推进、FlowPlan 组合依赖评估、DAG snapshot 门禁、snapshot 进展确认、触发审计、action/snapshot 证据联查、最小 REST API，以及由 Lakehouse Flow 主动发布的数据库、HTTP 或 MQ 调度意图；外部投递具备 claim 租约、fencing、退避重试和死信审计。任务执行、资源队列、执行器适配和下游结果回调明确不属于 Lakehouse Flow 的职责。完整 1.0 范围与验收状态以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准，契约演进见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)，生产接入与 PostgreSQL 操作分别见 [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) 和 [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md)。
 
 ## 一句话边界
 
@@ -32,7 +32,7 @@ Lakehouse Flow 当前应该回答：
 | LakehouseEvent | 已实现 | 原始湖仓事件，按 `event_id` 去重 |
 | AssetState | 已实现 | 物理观察与业务数据 snapshot 双轨单调推进；维护提交只更新表级观察轨，数据提交才投影 `changedPartitions` 分区状态 |
 | Lakehouse snapshot source SPI | 已实现基础版 | source/provider/identity/offset ordering 均与湖格式解耦；同一摄取循环可挂载 Paimon、Iceberg、Hudi 等适配器 |
-| Paimon snapshot source | 1.0 闭环已验证 | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导规范化的 `changedPartitions`；订单到 GMV 普通、checkpoint 重启与 Node 子图补数已通过真实 catalog E2E |
+| Paimon snapshot source | 1.0 闭环已验证 | 使用 Paimon 1.3 Catalog API 顺序读取真实 snapshot properties，并从 delta manifests 推导规范化的 `changedPartitions`；普通 DAG、checkpoint 重启、重跑、补数与失败恢复已通过真实 catalog E2E |
 | EventIngestionService | 基础版 | 动态扫描全部已配置 source；事件、表/分区状态、来源路由、FlowPlan 决策和格式独立 offset 在同一事务提交 |
 | 条件与触发评估 | 基础版 | `FlowPlanConditionService` 支持 AND/OR 分组；`FlowPlanEvaluationService` 从已发布版本生成完整 DAG 调度意图 |
 | SnapshotProgressService | 基础版 | 捕获目标资产 publication baseline；资产级 latest 推进不再直接确认共享写入结果 |
@@ -137,9 +137,9 @@ password postgres
 ./mvnw clean verify -DskipITs
 ```
 
-当前开发阶段的默认分支 CI 使用 JDK 17、Maven Wrapper 和 `-DskipITs`，继续执行全部单元测试并强制检查 Service line coverage >= 90%、branch coverage >= 65%；每个 public service 方法仍必须有直接测试入口。Testcontainers 整体 E2E 暂不随每次开发提交运行，等剩余功能与观测能力收口后再用不带 `-DskipITs` 的 `./mvnw clean verify` 集中验收。E2E 仍覆盖 API/事件入口、PostgreSQL/Flyway、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 与补数推进，不归属于某个单独生产模块。
+默认分支 CI 使用 JDK 17、Maven Wrapper 和 `-DskipITs`，执行全部单元测试并强制检查 Service line coverage >= 90%、branch coverage >= 65%；每个 public service 方法仍必须有直接测试入口。Testcontainers 整体 E2E 不随每次开发提交运行，但发布候选必须执行不带 `-DskipITs` 的 `./mvnw clean verify`。最近一次集中验收已于 2026-09-14 通过，共 396 个单元/启动测试和 8 个整体 E2E。
 
-当前系统 E2E 在 `lakehouse-flow-e2e` 中启动 PostgreSQL、MySQL 和一组 Flink JobManager/TaskManager 容器。订单链路测试只通过 Lakehouse Flow REST API 配置 ODS/DWD/DWS/ADS Flow 和单表 writer：ODS 是 Flink CDC 常驻流作业，并在 checkpoint 完成后提交带 writer 归因的 Paimon snapshot；DWD、DWS、ADS 是收到 HTTP scheduling intent 后立即提交的 Flink 有界批作业。它还会发起真实 `RESTART_JOB`，从外部 checkpoint 恢复 CDC offset，验证旧 epoch 拒绝、第二轮普通 DAG，以及从 DWD 开始且下游严格等待父 snapshot 的 Node 子图补数。测试执行端只模拟平台执行面，不向 Lakehouse Flow 回传 Flink 状态。
+当前系统 E2E 在 `lakehouse-flow-e2e` 中启动 PostgreSQL、MySQL 和一组 Flink JobManager/TaskManager 容器。订单链路测试只通过 Lakehouse Flow REST API 配置 ODS/DWD/DWS/ADS Flow 和单表 writer：ODS 是 Flink CDC 常驻流作业，并在 checkpoint 完成后提交带 writer 归因的 Paimon snapshot；DWD、DWS、ADS 是收到 HTTP scheduling intent 后立即提交的 Flink 有界批作业。测试覆盖真实 `START_JOB` / `RESTART_JOB`、checkpoint offset 恢复、旧 epoch 拒绝、普通 DAG、workflow/task/node 重跑、完整 Flow/Node 子图补数、失败恢复和流式 writer 受控补数切换。测试执行端只模拟平台执行面，不向 Lakehouse Flow 回传 Flink 状态。
 
 高可用测试启动两个独立 scheduler 应用上下文并连接同一真实 PostgreSQL，在明确的持久化切点模拟进程中断，覆盖 source 事务回滚与 offset 重放、HTTP 调用前 claim 遗留、送达后 ACK 丢失、租约过期重占、旧 token fencing、snapshot 确认重扫、Flow 并发名额和目标日期槽竞争。所有结果仍由数据库证据和目标 snapshot 判定，不读取执行状态。
 
@@ -318,7 +318,7 @@ curl --noproxy '*' http://localhost:8080/actuator/health
 
 ## 下一步建议
 
-1. LF-1.0 真实 Paimon 闭环与 PostgreSQL 高可用恢复已经完成：普通 DAG、重启、Node 子图补数、双 scheduler 竞争和中断恢复均已验收。
-2. 在同一整体 E2E 中验收剩余 action、`DATABASE_TABLE` 正式投递、HTTP 耗尽路径、四种结果语义和流批边界。
-3. 基于集中 E2E 反馈冻结 1.0 REST、intent payload、schema 和兼容策略。
-4. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
+1. 以已冻结的 LF-1.0 REST、intent payload 和 V1-V23 schema 制作首个发布候选。
+2. 在受信试运行环境接入真实执行平台的 `DATABASE_TABLE` 或 HTTP 消费端，并完成 runbook 演练。
+3. 容量基线放到真实生产负载下采集；在此之前不承诺未经测量的 SLA。
+4. LF-1.1+ 再推进可信身份/RBAC、Iceberg/Hudi、具体 MQ 产品绑定和 Web 运维视图。

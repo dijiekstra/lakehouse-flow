@@ -59,6 +59,8 @@ lakehouse-flow:
     # One immutable intent selects exactly one outbound route.
     channel: ${LAKEHOUSE_FLOW_INTENT_CHANNEL:DATABASE_TABLE}
     destination: ${LAKEHOUSE_FLOW_INTENT_DESTINATION:scheduling_intent}
+    http:
+      request-timeout: ${LAKEHOUSE_FLOW_HTTP_REQUEST_TIMEOUT:PT30S}
     publisher:
       enabled: true
       fixed-delay-ms: 1000

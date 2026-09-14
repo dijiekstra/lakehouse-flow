@@ -33,7 +33,7 @@ V1-V23 是 LF-1.0 冻结前形成的历史基线。从 V23 之后新增 migratio
 3. **Backfill/Observe**：回填并观察至少一个完整业务和故障恢复周期。
 4. **Contract**：下一发布才移除旧结构，且必须另有升级前备份。
 
-STB-5 已形成开发冻结候选；最终整体 E2E 通过前，任何破坏性 migration 都不得进入 LF-1.0。REST、intent 与 schema 的统一版本规则见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)。
+STB-5 已通过 V22 到 V23 真实升级 E2E 并正式冻结。V1-V23 不得修改；任何后续 schema 变化必须新增 V24 或更高版本，破坏性 migration 仍不得进入 LF-1.0。REST、intent 与 schema 的统一版本规则见 [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md)。
 
 ## 3. 升级前检查
 

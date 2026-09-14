@@ -1,5 +1,7 @@
 package io.github.lakehouseflow.scheduler.delivery;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -16,15 +18,23 @@ import java.util.Map;
 @Component
 public class JdkSchedulingIntentHttpSender implements SchedulingIntentHttpSender {
 
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     private final HttpClient httpClient;
+    private final Duration requestTimeout;
 
-    /** Create a sender with the Java 17 platform HTTP client. */
-    public JdkSchedulingIntentHttpSender() {
+    /**
+     * Create a sender with a deployment-configurable Java 17 HTTP timeout.
+     *
+     * @param requestTimeout connect and complete-request timeout
+     */
+    @Autowired
+    public JdkSchedulingIntentHttpSender(
+            @Value("${lakehouse-flow.scheduling-intent-delivery.http.request-timeout:PT30S}")
+            Duration requestTimeout) {
         this(HttpClient.newBuilder()
-                .connectTimeout(REQUEST_TIMEOUT)
-                .build());
+                .connectTimeout(requirePositive(requestTimeout))
+                .build(), requestTimeout);
     }
 
     /**
@@ -33,14 +43,20 @@ public class JdkSchedulingIntentHttpSender implements SchedulingIntentHttpSender
      * @param httpClient Java platform HTTP client
      */
     JdkSchedulingIntentHttpSender(HttpClient httpClient) {
+        this(httpClient, DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    /** Build a focused sender with an explicit request timeout. */
+    JdkSchedulingIntentHttpSender(HttpClient httpClient, Duration requestTimeout) {
         this.httpClient = httpClient;
+        this.requestTimeout = requirePositive(requestTimeout);
     }
 
     /** {@inheritDoc} */
     @Override
     public int post(URI destination, Map<String, String> headers, byte[] body) {
         HttpRequest.Builder request = HttpRequest.newBuilder(destination)
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(requestTimeout)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body));
         headers.forEach(request::header);
         try {
@@ -51,5 +67,13 @@ public class JdkSchedulingIntentHttpSender implements SchedulingIntentHttpSender
         } catch (IOException e) {
             throw new IllegalStateException("Scheduling intent HTTP publication failed", e);
         }
+    }
+
+    /** Require a positive transport timeout before constructing the HTTP client. */
+    private static Duration requirePositive(Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("HTTP request timeout must be positive");
+        }
+        return timeout;
     }
 }

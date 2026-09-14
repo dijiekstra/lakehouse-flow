@@ -1,6 +1,6 @@
 # Lakehouse Flow 快速启动
 
-**最后核对**: 2026-09-13
+**最后核对**: 2026-09-14
 
 本指南用于启动当前 Lakehouse Flow 应用和验证本地构建。系统只生成调度意图并通过目标资产 snapshot 确认结果，不会在本地替你执行下游任务。
 
@@ -47,8 +47,9 @@ Password: postgres
 
 该命令会：
 
-- 编译全部九个模块；
+- 编译全部十三个模块；
 - 运行 JUnit/Mockito 测试；
+- 使用 Testcontainers 运行 PostgreSQL、MySQL、Flink 和 Paimon 整体 E2E；
 - 检查 service line coverage >= 90%、branch coverage >= 65%；
 - 生成可执行 Spring Boot JAR。
 

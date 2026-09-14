@@ -8,27 +8,39 @@ import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
 import io.github.lakehouseflow.common.SchedulingIntentContract;
 import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
+import io.github.lakehouseflow.common.SnapshotSourceHealthOutcomes;
 import io.github.lakehouseflow.dao.AssetStateRepository;
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
+import io.github.lakehouseflow.dao.JobControlIntentDeliveryRepository;
+import io.github.lakehouseflow.dao.JobControlIntentRepository;
 import io.github.lakehouseflow.dao.LakehouseEventRepository;
 import io.github.lakehouseflow.dao.SchedulingIntentDeliveryRepository;
 import io.github.lakehouseflow.dao.SchedulingIntentRepository;
 import io.github.lakehouseflow.dao.SchedulingTargetAdmissionRepository;
+import io.github.lakehouseflow.dao.SnapshotSourceHealthRepository;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
 import io.github.lakehouseflow.integration.event.SnapshotIngestionTransactionService;
 import io.github.lakehouseflow.model.FlowPlan;
 import io.github.lakehouseflow.model.FlowPlanVersion;
+import io.github.lakehouseflow.model.JobControlIntent;
+import io.github.lakehouseflow.model.JobControlIntentDelivery;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.ScheduleNode;
 import io.github.lakehouseflow.model.SchedulingIntent;
 import io.github.lakehouseflow.model.SchedulingIntentDelivery;
 import io.github.lakehouseflow.model.SnapshotConfirmationResult;
+import io.github.lakehouseflow.model.SnapshotSourceHealth;
 import io.github.lakehouseflow.model.TaskInstance;
 import io.github.lakehouseflow.model.WorkflowInstance;
+import io.github.lakehouseflow.scheduler.JobControlIntentDeliveryScanner;
+import io.github.lakehouseflow.scheduler.SchedulingIntentDeliveryScanner;
 import io.github.lakehouseflow.scheduler.delivery.HttpSchedulingIntentPublisher;
 import io.github.lakehouseflow.service.FlowPlanService;
+import io.github.lakehouseflow.service.JobControlIntentDeliveryQueryService;
+import io.github.lakehouseflow.service.JobControlIntentService;
 import io.github.lakehouseflow.service.SchedulingIntentDeliveryService;
+import io.github.lakehouseflow.service.SchedulingIntentDeliveryQueryService;
 import io.github.lakehouseflow.service.SchedulingIntentService;
 import io.github.lakehouseflow.service.SchedulingTargetAdmissionService;
 import io.github.lakehouseflow.service.SnapshotConfirmationService;
@@ -36,6 +48,8 @@ import io.github.lakehouseflow.service.TaskInstanceService;
 import io.github.lakehouseflow.service.WorkflowInstanceService;
 import io.github.lakehouseflow.service.WriterJobBindingService;
 import io.github.lakehouseflow.service.delivery.SchedulingIntentPublication;
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,6 +88,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Whole-system PostgreSQL recovery proof for scheduler coordination boundaries.
@@ -148,6 +163,12 @@ class SchedulerRecoveryE2EIT {
     private SchedulingIntentDeliveryRepository deliveryRepository;
 
     @Autowired
+    private JobControlIntentRepository jobControlIntentRepository;
+
+    @Autowired
+    private JobControlIntentDeliveryRepository jobControlDeliveryRepository;
+
+    @Autowired
     private SchedulingTargetAdmissionRepository targetAdmissionRepository;
 
     @Autowired
@@ -164,6 +185,9 @@ class SchedulerRecoveryE2EIT {
 
     @Autowired
     private AssetStateRepository assetStateRepository;
+
+    @Autowired
+    private SnapshotSourceHealthRepository snapshotSourceHealthRepository;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -189,6 +213,7 @@ class SchedulerRecoveryE2EIT {
                     workflow_instance,
                     lakehouse_event,
                     asset_state,
+                    snapshot_source_health,
                     event_consumer_offset,
                     scheduling_target_admission,
                     writer_job_binding
@@ -452,6 +477,280 @@ class SchedulerRecoveryE2EIT {
                 assertThat(admission.getStatus()).isEqualTo("AVAILABLE"));
     }
 
+    /** Verify database-table delivery makes both immutable intent kinds atomically visible. */
+    @Test
+    void publishesDataAndControlIntentsThroughDatabaseTables() {
+        try (ConfigurableApplicationContext databaseScheduler = openPeerContext(Map.of(
+                "lakehouse-flow.scheduling-intent-delivery.channel", "DATABASE_TABLE",
+                "lakehouse-flow.scheduling-intent-delivery.destination", "scheduling_intent",
+                "lakehouse-flow.job-control-intent-delivery.channel", "DATABASE_TABLE",
+                "lakehouse-flow.job-control-intent-delivery.destination", "job_control_intent"))) {
+            SchedulingIntentService databaseIntentService =
+                    databaseScheduler.getBean(SchedulingIntentService.class);
+            JobControlIntentService databaseControlService =
+                    databaseScheduler.getBean(JobControlIntentService.class);
+
+            FlowFixture flow = createPublishedBatchFlow(
+                    "database-delivery-flow",
+                    "database-delivery-writer",
+                    "ha.database.orders",
+                    2);
+            ReadyTask readyTask = createReadyTask(flow, LocalDate.of(2026, 9, 18), "database-delivery");
+            SchedulingIntentService.TaskSchedulingIntent dataIntent =
+                    databaseIntentService.publishTaskIntent(readyTask.task().getId());
+            SchedulingIntentService.TaskSchedulingIntent duplicateDataIntent =
+                    databaseIntentService.publishTaskIntent(readyTask.task().getId());
+
+            writerJobBindingService.createBinding(new WriterJobBindingService.CreateWriterJobBindingCommand(
+                    "database-control-writer",
+                    "ha.database.control_orders",
+                    List.of(ScheduleNodeProcessingModes.STREAMING)));
+            JobControlIntentService.CreateJobControlIntentCommand command =
+                    new JobControlIntentService.CreateJobControlIntentCommand(
+                            "database-control-start",
+                            "e2e",
+                            "verify database-table control publication");
+            JobControlIntentService.JobControlIntentView controlIntent =
+                    databaseControlService.startJob("database-control-writer", command);
+            JobControlIntentService.JobControlIntentView duplicateControlIntent =
+                    databaseControlService.startJob("database-control-writer", command);
+
+            assertThat(dataIntent.intentId()).isEqualTo(duplicateDataIntent.intentId());
+            assertThat(dataIntent.deliveryChannel()).isEqualTo(SchedulingIntentDeliveryChannels.DATABASE_TABLE);
+            assertThat(dataIntent.deliveryStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
+            assertThat(dataIntent.deliveryAttemptCount()).isEqualTo(1);
+            assertThat(dataIntent.publishedAt()).isNotNull();
+            assertThat(controlIntent.intentId()).isEqualTo(duplicateControlIntent.intentId());
+            assertThat(controlIntent.deliveryChannel()).isEqualTo(SchedulingIntentDeliveryChannels.DATABASE_TABLE);
+            assertThat(controlIntent.deliveryStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
+            assertThat(controlIntent.deliveryAttemptCount()).isEqualTo(1);
+            assertThat(controlIntent.snapshotResult()).isEqualTo("WAITING");
+            assertThat(schedulingIntentRepository.findAll()).hasSize(1);
+            assertThat(deliveryRepository.findAll()).singleElement().satisfies(delivery -> {
+                assertThat(delivery.getDestination()).isEqualTo("scheduling_intent");
+                assertThat(delivery.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
+            });
+            assertThat(jobControlIntentRepository.findAll()).hasSize(1);
+            assertThat(jobControlDeliveryRepository.findAll()).singleElement().satisfies(delivery -> {
+                assertThat(delivery.getDestination()).isEqualTo("job_control_intent");
+                assertThat(delivery.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
+            });
+            assertThat(workflowInstanceRepository.findAll()).hasSize(1);
+            assertThat(taskInstanceRepository.findAll()).hasSize(1);
+        }
+    }
+
+    /** Verify HTTP exhaustion remains independent from source and snapshot conclusions. */
+    @Test
+    void keepsDeliveryExhaustionSourceBlockingAndSnapshotTimeoutOrthogonal() {
+        try (TimeoutHttpEndpoint endpoint = TimeoutHttpEndpoint.start();
+                ConfigurableApplicationContext httpScheduler = openPeerContext(Map.ofEntries(
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.channel", "HTTP"),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.destination", endpoint.url()),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.http.request-timeout", "PT0.1S"),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.publisher.enabled", true),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.publisher.fixed-delay-ms", 3_600_000),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.publisher.max-attempts", 2),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.publisher.initial-backoff", "PT0.01S"),
+                        Map.entry("lakehouse-flow.scheduling-intent-delivery.publisher.maximum-backoff", "PT0.01S"),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.channel", "HTTP"),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.destination", endpoint.url()),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.publisher.enabled", true),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.publisher.fixed-delay-ms", 3_600_000),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.publisher.max-attempts", 2),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.publisher.initial-backoff", "PT0.01S"),
+                        Map.entry("lakehouse-flow.job-control-intent-delivery.publisher.maximum-backoff", "PT0.01S")))) {
+            SchedulingIntentService httpIntentService = httpScheduler.getBean(SchedulingIntentService.class);
+            JobControlIntentService httpControlService = httpScheduler.getBean(JobControlIntentService.class);
+            SchedulingIntentDeliveryScanner dataScanner =
+                    httpScheduler.getBean(SchedulingIntentDeliveryScanner.class);
+            JobControlIntentDeliveryScanner controlScanner =
+                    httpScheduler.getBean(JobControlIntentDeliveryScanner.class);
+
+            FlowFixture blockedFlow = createPublishedBatchFlow(
+                    "http-exhausted-flow",
+                    "http-exhausted-writer",
+                    "ha.http.exhausted_orders",
+                    2);
+            ReadyTask blockedTask = createReadyTask(
+                    blockedFlow,
+                    LocalDate.of(2026, 9, 19),
+                    "http-exhausted");
+            SchedulingIntentService.TaskSchedulingIntent dataIntent =
+                    httpIntentService.publishTaskIntent(blockedTask.task().getId());
+
+            writerJobBindingService.createBinding(new WriterJobBindingService.CreateWriterJobBindingCommand(
+                    "http-control-writer",
+                    "ha.http.control_orders",
+                    List.of(ScheduleNodeProcessingModes.STREAMING)));
+            JobControlIntentService.JobControlIntentView controlIntent = httpControlService.startJob(
+                    "http-control-writer",
+                    new JobControlIntentService.CreateJobControlIntentCommand(
+                            "http-control-start",
+                            "e2e",
+                            "verify HTTP control exhaustion"));
+
+            dataScanner.publishDueDeliveries();
+            controlScanner.publishDueDeliveries();
+            awaitRetryWindow(dataIntent.intentId(), controlIntent.intentId());
+            dataScanner.publishDueDeliveries();
+            controlScanner.publishDueDeliveries();
+
+            assertThat(deliveryRepository.findBySchedulingIntentId(dataIntent.intentId()).orElseThrow())
+                    .satisfies(delivery -> {
+                        assertThat(delivery.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.EXHAUSTED);
+                        assertThat(delivery.getAttemptCount()).isEqualTo(2);
+                        assertThat(delivery.getDeadLetteredAt()).isNotNull();
+                    });
+            assertThat(jobControlDeliveryRepository.findByJobControlIntentId(controlIntent.intentId()).orElseThrow())
+                    .satisfies(delivery -> {
+                        assertThat(delivery.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.EXHAUSTED);
+                        assertThat(delivery.getAttemptCount()).isEqualTo(2);
+                        assertThat(delivery.getDeadLetteredAt()).isNotNull();
+                    });
+            assertThat(endpoint.requestCount()).isEqualTo(4);
+            assertThat(endpoint.uniqueIntentCount()).isEqualTo(2);
+
+            SchedulingIntentDeliveryQueryService dataQuery =
+                    httpScheduler.getBean(SchedulingIntentDeliveryQueryService.class);
+            JobControlIntentDeliveryQueryService controlQuery =
+                    httpScheduler.getBean(JobControlIntentDeliveryQueryService.class);
+            assertThat(dataQuery.findDeadLetters("HTTP", 10)).singleElement().satisfies(deadLetter ->
+                    assertThat(deadLetter.intentKey()).isEqualTo(dataIntent.intentKey()));
+            assertThat(controlQuery.findDeadLetters("HTTP", 10)).singleElement().satisfies(deadLetter ->
+                    assertThat(deadLetter.intentKey()).isEqualTo(controlIntent.intentKey()));
+
+            moveTaskPastConfirmationDeadline(blockedTask.task().getId());
+            SnapshotConfirmationResult sourceBlocked = snapshotConfirmationService.checkTaskSnapshotProgress(
+                    blockedTask.task().getId(), Duration.ofMinutes(5));
+            assertThat(sourceBlocked.resultingState()).isEqualTo(SchedulingStates.SCHEDULED);
+            assertThat(sourceBlocked.sourceHealth()).isEqualTo(SnapshotSourceHealthOutcomes.SOURCE_BLOCKED);
+            assertThat(deliveryRepository.findBySchedulingIntentId(dataIntent.intentId()).orElseThrow().getStatus())
+                    .isEqualTo(SchedulingIntentDeliveryStatuses.EXHAUSTED);
+
+            FlowFixture timeoutFlow = createPublishedBatchFlow(
+                    "snapshot-timeout-flow",
+                    "snapshot-timeout-writer",
+                    "ha.timeout.orders",
+                    2);
+            ReadyTask timeoutTask = createReadyTask(
+                    timeoutFlow,
+                    LocalDate.of(2026, 9, 20),
+                    "snapshot-timeout");
+            SchedulingIntentService.TaskSchedulingIntent timeoutIntent =
+                    httpIntentService.publishTaskIntent(timeoutTask.task().getId());
+            persistHealthySource(timeoutFlow.tableAssetKey());
+            moveTaskPastConfirmationDeadline(timeoutTask.task().getId());
+            SnapshotConfirmationResult notAdvanced = snapshotConfirmationService.checkTaskSnapshotProgress(
+                    timeoutTask.task().getId(), Duration.ofMinutes(5));
+            assertThat(notAdvanced.resultingState()).isEqualTo(SchedulingStates.SNAPSHOT_NOT_ADVANCED);
+            assertThat(notAdvanced.sourceHealth()).isEqualTo(SnapshotSourceHealthOutcomes.HEALTHY);
+            assertThat(deliveryRepository.findBySchedulingIntentId(timeoutIntent.intentId()).orElseThrow().getStatus())
+                    .isEqualTo(SchedulingIntentDeliveryStatuses.PENDING);
+            assertThat(jobControlIntentRepository.findById(controlIntent.intentId()).orElseThrow().getSnapshotResult())
+                    .isEqualTo("WAITING");
+        }
+    }
+
+    /** Verify an existing V22 scheduling row survives the real V23 forward migration. */
+    @Test
+    void upgradesExistingTaskEvidenceFromV22ToV23() {
+        String schema = "lf_v23_upgrade";
+        jdbcTemplate.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        try {
+            Flyway v22 = migrationFlyway(schema, MigrationVersion.fromVersion("22.0"));
+            v22.migrate();
+            Long workflowId = jdbcTemplate.queryForObject("""
+                    INSERT INTO lf_v23_upgrade.workflow_instance(
+                        instance_key, workflow_code, workflow_version, biz_date, trigger_type, state)
+                    VALUES ('upgrade-workflow', 'upgrade-flow', 1, CURRENT_TIMESTAMP, 'E2E', 'SCHEDULED')
+                    RETURNING id
+                    """, Long.class);
+            Long taskId = jdbcTemplate.queryForObject("""
+                    INSERT INTO lf_v23_upgrade.task_instance(
+                        instance_key, workflow_instance_id, task_code, task_version, biz_date, state, target_asset_key)
+                    VALUES ('upgrade-task', ?, 'upgrade-node', 1, CURRENT_TIMESTAMP, 'SCHEDULED', 'ha.upgrade.orders')
+                    RETURNING id
+                    """, Long.class, workflowId);
+
+            Flyway current = migrationFlyway(schema, null);
+            current.migrate();
+            current.validate();
+
+            Integer sourceColumns = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = ?
+                      AND table_name = 'task_instance'
+                      AND column_name IN ('source_health', 'source_health_detail', 'source_evidence_checked_at')
+                    """, Integer.class, schema);
+            assertThat(sourceColumns).isEqualTo(3);
+            Map<String, Object> upgraded = jdbcTemplate.queryForMap(
+                    "SELECT id, state, source_health FROM lf_v23_upgrade.task_instance WHERE id = ?",
+                    taskId);
+            assertThat(((Number) upgraded.get("id")).longValue()).isEqualTo(taskId);
+            assertThat(upgraded.get("state")).isEqualTo(SchedulingStates.SCHEDULED);
+            assertThat(upgraded.get("source_health")).isNull();
+        } finally {
+            jdbcTemplate.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    /** Wait until both transport retries are due after their first failed HTTP attempts. */
+    private void awaitRetryWindow(Long schedulingIntentId, Long jobControlIntentId) {
+        await().atMost(Duration.ofSeconds(5)).until(() -> {
+            SchedulingIntentDelivery dataDelivery = deliveryRepository
+                    .findBySchedulingIntentId(schedulingIntentId)
+                    .orElseThrow();
+            JobControlIntentDelivery controlDelivery = jobControlDeliveryRepository
+                    .findByJobControlIntentId(jobControlIntentId)
+                    .orElseThrow();
+            LocalDateTime now = LocalDateTime.now();
+            return SchedulingIntentDeliveryStatuses.RETRY_WAIT.equals(dataDelivery.getStatus())
+                    && SchedulingIntentDeliveryStatuses.RETRY_WAIT.equals(controlDelivery.getStatus())
+                    && dataDelivery.getNextAttemptAt() != null
+                    && controlDelivery.getNextAttemptAt() != null
+                    && !dataDelivery.getNextAttemptAt().isAfter(now)
+                    && !controlDelivery.getNextAttemptAt().isAfter(now);
+        });
+    }
+
+    /** Move one scheduled task behind its immutable five-minute confirmation deadline. */
+    private void moveTaskPastConfirmationDeadline(Long taskInstanceId) {
+        TaskInstance task = taskInstanceRepository.findById(taskInstanceId).orElseThrow();
+        task.setScheduledAt(LocalDateTime.now().minusMinutes(6));
+        taskInstanceRepository.saveAndFlush(task);
+    }
+
+    /** Persist a current source proof that permits a trustworthy not-advanced conclusion. */
+    private void persistHealthySource(String tableAssetKey) {
+        snapshotSourceHealthRepository.saveAndFlush(SnapshotSourceHealth.builder()
+                .sourceType("PAIMON")
+                .sourceName("e2e:" + tableAssetKey)
+                .tableAssetKey(tableAssetKey)
+                .outcome(SnapshotSourceHealthOutcomes.HEALTHY)
+                .offsetStatus("CAUGHT_UP")
+                .projectionStatus("CONSISTENT")
+                .durableOffset("0")
+                .latestSourceOffset("0")
+                .evidenceCheckedAt(LocalDateTime.now())
+                .detail("E2E source range and projection are complete")
+                .build());
+    }
+
+    /** Configure Flyway against one isolated schema and an optional target version. */
+    private Flyway migrationFlyway(String schema, MigrationVersion target) {
+        org.flywaydb.core.api.configuration.FluentConfiguration configuration = Flyway.configure()
+                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .defaultSchema(schema)
+                .schemas(schema)
+                .locations("classpath:db/migration");
+        if (target != null) {
+            configuration.target(target);
+        }
+        return configuration.load();
+    }
+
     /** Create a pending HTTP delivery backed by real workflow, task, and intent rows. */
     private SchedulingIntentDelivery createPendingHttpDelivery(String suffix, String destination) {
         LocalDateTime now = LocalDateTime.now();
@@ -639,9 +938,16 @@ class SchedulerRecoveryE2EIT {
 
     /** Start one independent scheduler application context against the shared database. */
     private ConfigurableApplicationContext openPeerContext() {
+        return openPeerContext(Map.of());
+    }
+
+    /** Start one peer scheduler with scenario-specific transport properties. */
+    private ConfigurableApplicationContext openPeerContext(Map<String, Object> overrides) {
+        Map<String, Object> properties = peerProperties();
+        properties.putAll(overrides);
         return new SpringApplicationBuilder(OrderToGmvE2EIT.E2EApplication.class)
                 .web(WebApplicationType.NONE)
-                .properties(peerProperties())
+                .properties(properties)
                 .run();
     }
 
@@ -737,6 +1043,70 @@ class SchedulerRecoveryE2EIT {
         /** Create one deterministic interruption at a transaction boundary. */
         private SimulatedProcessInterruption(String message) {
             super(message);
+        }
+    }
+
+    /** HTTP endpoint that exceeds every request timeout while recording idempotency keys. */
+    private static final class TimeoutHttpEndpoint implements AutoCloseable {
+
+        private final HttpServer server;
+        private final ExecutorService executor;
+        private final AtomicInteger requestCount = new AtomicInteger();
+        private final Set<String> uniqueIntentKeys = ConcurrentHashMap.newKeySet();
+
+        /** Create and start one deterministic slow endpoint. */
+        private TimeoutHttpEndpoint() throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            executor = Executors.newCachedThreadPool();
+            server.setExecutor(executor);
+            server.createContext("/intents", this::receive);
+            server.start();
+        }
+
+        /** Start one endpoint and convert checked setup failures into test failures. */
+        private static TimeoutHttpEndpoint start() {
+            try {
+                return new TimeoutHttpEndpoint();
+            } catch (IOException exception) {
+                throw new IllegalStateException("Unable to start timeout HTTP endpoint", exception);
+            }
+        }
+
+        /** Record the physical attempt and delay acknowledgement beyond the client deadline. */
+        private void receive(HttpExchange exchange) throws IOException {
+            exchange.getRequestBody().readAllBytes();
+            requestCount.incrementAndGet();
+            uniqueIntentKeys.add(exchange.getRequestHeaders().getFirst("Idempotency-Key"));
+            try {
+                Thread.sleep(500);
+                exchange.sendResponseHeaders(202, -1);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        }
+
+        /** Return the deliberately slow publication destination. */
+        private String url() {
+            return "http://127.0.0.1:" + server.getAddress().getPort() + "/intents";
+        }
+
+        /** Return all timed-out physical HTTP attempts. */
+        private int requestCount() {
+            return requestCount.get();
+        }
+
+        /** Return unique downstream idempotency keys observed across retries. */
+        private int uniqueIntentCount() {
+            return uniqueIntentKeys.size();
+        }
+
+        /** Stop the endpoint and its request executor. */
+        @Override
+        public void close() {
+            server.stop(0);
+            executor.shutdownNow();
         }
     }
 

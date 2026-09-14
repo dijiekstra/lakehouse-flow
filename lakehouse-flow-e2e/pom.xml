@@ -81,6 +81,17 @@
     </dependencies>
 
     <build>
+        <testResources>
+            <testResource>
+                <directory>src/test/resources</directory>
+            </testResource>
+            <testResource>
+                <directory>../lakehouse-flow-boot/src/main/resources</directory>
+                <includes>
+                    <include>db/migration/V2.0__phase2_tables.sql</include>
+                </includes>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

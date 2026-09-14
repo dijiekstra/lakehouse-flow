@@ -95,6 +95,7 @@ export LAKEHOUSE_FLOW_INTENT_CHANNEL=HTTP
 export LAKEHOUSE_FLOW_INTENT_DESTINATION=https://execution-plane.example/api/data-intents
 export LAKEHOUSE_FLOW_JOB_CONTROL_CHANNEL=HTTP
 export LAKEHOUSE_FLOW_JOB_CONTROL_DESTINATION=https://execution-plane.example/api/job-control-intents
+export LAKEHOUSE_FLOW_HTTP_REQUEST_TIMEOUT=PT30S
 ```
 
 生产 endpoint 必须使用 TLS，并在网关或服务网格完成受信身份校验。当前 LF-1.0 面向受信单团队环境，应用本身不提供租户级 RBAC。
@@ -102,6 +103,7 @@ export LAKEHOUSE_FLOW_JOB_CONTROL_DESTINATION=https://execution-plane.example/ap
 HTTP 只有 2xx 被视为传输 ACK。下游必须使用 `Idempotency-Key` 或 `X-Lakehouse-Flow-Intent-Key` 去重，重复请求返回 2xx 和同一接收结果。响应 body 不参与 Lakehouse Flow 的结果判断。默认 claim、退避与重试参数位于 `application.yml`，调整前必须保证：
 
 - `claim-lease` 长于单次 HTTP 请求的正常上界；
+- `LAKEHOUSE_FLOW_HTTP_REQUEST_TIMEOUT` 是正数 duration，且小于 `claim-lease`；
 - `maximum-backoff` 不小于 `initial-backoff`；
 - 重试总窗口不超过 intent 自身的 `deliverBefore`；
 - 多 scheduler 节点配置完全一致。

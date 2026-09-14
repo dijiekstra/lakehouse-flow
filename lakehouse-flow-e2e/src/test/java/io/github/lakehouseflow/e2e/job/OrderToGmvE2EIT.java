@@ -12,6 +12,7 @@ import io.github.lakehouseflow.dao.LakehouseEventRepository;
 import io.github.lakehouseflow.dao.SchedulingIntentRepository;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
+import io.github.lakehouseflow.integration.event.SnapshotSourceReconciliationService;
 import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.SchedulingIntent;
@@ -19,6 +20,7 @@ import io.github.lakehouseflow.model.TaskInstance;
 import io.github.lakehouseflow.model.WorkflowInstance;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -38,6 +40,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -54,6 +57,7 @@ import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -66,6 +70,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -184,6 +189,17 @@ class OrderToGmvE2EIT {
     @Autowired
     private LakehouseEventRepository lakehouseEventRepository;
 
+    @Autowired
+    private SnapshotSourceReconciliationService snapshotSourceReconciliationService;
+
+    /** Keep local random-port API calls outside host-level HTTP proxy configuration. */
+    @BeforeEach
+    void bypassHostProxyForLocalApi() {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setProxy(Proxy.NO_PROXY);
+        restTemplate.getRestTemplate().setRequestFactory(requestFactory);
+    }
+
     /** Test-only application shell that assembles every production scheduler layer. */
     @SpringBootConfiguration
     @EnableAutoConfiguration
@@ -254,6 +270,8 @@ class OrderToGmvE2EIT {
                 FLINK_JOB_MANAGER,
                 URI.create("http://" + FLINK_JOB_MANAGER.getHost() + ":"
                         + FLINK_JOB_MANAGER.getMappedPort(8081)),
+                URI.create("http://127.0.0.1:"
+                        + context.getEnvironment().getRequiredProperty("local.server.port") + "/"),
                 WAREHOUSE.toUri().toString(),
                 MYSQL_ALIAS,
                 MYSQL.getDatabaseName(),
@@ -273,7 +291,7 @@ class OrderToGmvE2EIT {
     }
 
     /**
-     * Verify start, restart, old-epoch fencing, and two snapshot-driven GMV DAG runs.
+     * Verify ordinary scheduling, lifecycle control, every release-critical action, and mixed DAG recovery.
      *
      * @throws Exception when test data insertion or final Paimon inspection fails
      */
@@ -318,9 +336,15 @@ class OrderToGmvE2EIT {
 
         EXECUTION_ENDPOINT.verifyGmv(businessDate, 15_500L);
         verifyNodeBackfill(flowPlanVersionId, businessDate);
+        verifyWorkflowRerun(businessDate);
+        verifyTaskRerun(businessDate);
+        verifyNodeRerun(flowPlanVersionId, businessDate);
+        verifyFullFlowBackfill(businessDate);
+        verifyBackfillRecovery(flowPlanVersionId, businessDate);
+        verifyMixedInputEvidence();
         EXECUTION_ENDPOINT.verifyGmv(businessDate, 15_500L);
         assertThat(EXECUTION_ENDPOINT.successfulJobTypes())
-                .contains("ODS", "DWD", "DWS", "ADS");
+                .contains("ODS", "ODS_REPLAY", "DWD", "DWS", "ADS");
         assertThat(EXECUTION_ENDPOINT.failures()).isEmpty();
     }
 
@@ -348,7 +372,7 @@ class OrderToGmvE2EIT {
                 Map.of(
                         "version", 1,
                         "graphJson", Map.of(),
-                        "dependencySpecJson", rootDependency,
+                        "dependencySpecJson", Map.of(),
                         "triggerPolicyJson", Map.of("type", "SNAPSHOT_DRIVEN"),
                         "confirmationPolicyJson", Map.of("timeout", "PT2M"),
                         "concurrencyPolicyJson", Map.of("maxActiveInstances", 1)));
@@ -431,6 +455,234 @@ class OrderToGmvE2EIT {
                 .get("upstreamTaskInstanceId")).isNotNull();
         assertThat(backfillIntents.get(2).getInputSnapshotVectorJson().get(0)
                 .get("upstreamTaskInstanceId")).isNotNull();
+    }
+
+    /** Rerun one complete published workflow and require all four target snapshots. */
+    private void verifyWorkflowRerun(LocalDate businessDate) {
+        WorkflowInstance source = workflowInstanceRepository.findAll().stream()
+                .filter(workflow -> "SNAPSHOT_DRIVEN".equals(workflow.getTriggerType()))
+                .filter(workflow -> SchedulingStates.SNAPSHOT_CONFIRMED.equals(workflow.getState()))
+                .min(java.util.Comparator.comparing(WorkflowInstance::getId))
+                .orElseThrow();
+        Map<String, Object> action = post(
+                "/api/v1/scheduling-actions/rerun-workflow",
+                Map.of(
+                        "workflowInstanceId", source.getId(),
+                        "actionKey", "e2e-rerun-order-workflow",
+                        "requestedBy", "e2e",
+                        "reason", "verify complete workflow rerun"));
+        assertThat(stringValue(action, "status")).isEqualTo("APPLIED");
+        long workflowId = longList(action, "workflowInstanceIds").get(0);
+        awaitWorkflowSnapshots(workflowId, 4);
+        assertThat(taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(workflowId))
+                .extracting(TaskInstance::getTaskCode)
+                .containsExactly("ods-orders", "dwd-order-detail", "dws-daily-gmv", "ads-gmv");
+        EXECUTION_ENDPOINT.awaitStreamingWriter("orders-ods-stream", E2E_TIMEOUT);
+        assertThat(workflowInstanceRepository.findById(workflowId).orElseThrow().getBizDate().toLocalDate())
+                .isEqualTo(businessDate);
+    }
+
+    /** Rerun one existing task as an explicit action entry and confirm only its target snapshot. */
+    private void verifyTaskRerun(LocalDate businessDate) {
+        TaskInstance source = taskInstanceRepository.findAll().stream()
+                .filter(task -> "dwd-order-detail".equals(task.getTaskCode()))
+                .filter(task -> SchedulingStates.SNAPSHOT_CONFIRMED.equals(task.getState()))
+                .min(java.util.Comparator.comparing(TaskInstance::getId))
+                .orElseThrow();
+        Map<String, Object> action = post(
+                "/api/v1/scheduling-actions/rerun-task",
+                Map.of(
+                        "taskInstanceId", source.getId(),
+                        "actionKey", "e2e-rerun-order-task",
+                        "requestedBy", "e2e",
+                        "reason", "verify task rerun"));
+        assertThat(stringValue(action, "status")).isEqualTo("APPLIED");
+        long taskId = longValue(action, "taskInstanceId");
+        awaitTaskSnapshot(taskId);
+        TaskInstance rerun = taskInstanceRepository.findById(taskId).orElseThrow();
+        assertThat(rerun.getBizDate().toLocalDate()).isEqualTo(businessDate);
+        assertThat(rerun.isParentDependencyBypassed()).isTrue();
+    }
+
+    /** Rerun one published node without borrowing a parent confirmation from another instance. */
+    private void verifyNodeRerun(long flowPlanVersionId, LocalDate businessDate) {
+        Map<String, Object> action = post(
+                "/api/v1/scheduling-actions/rerun-node",
+                Map.of(
+                        "flowPlanVersionId", flowPlanVersionId,
+                        "nodeCode", "ads-gmv",
+                        "bizDate", businessDate.toString(),
+                        "actionKey", "e2e-rerun-ads-node",
+                        "requestedBy", "e2e",
+                        "reason", "verify published node rerun"));
+        assertThat(stringValue(action, "status")).isEqualTo("APPLIED");
+        long taskId = longValue(action, "taskInstanceId");
+        awaitTaskSnapshot(taskId);
+        SchedulingIntent intent = schedulingIntentRepository.findByTaskInstanceId(taskId).orElseThrow();
+        assertThat(intent.getInputSnapshotVectorJson()).isEmpty();
+        assertThat(intent.getTriggerType()).isEqualTo("RERUN_TASK");
+    }
+
+    /** Backfill the complete Flow, including a controlled streaming-writer replay and restart. */
+    private void verifyFullFlowBackfill(LocalDate businessDate) {
+        String actionKey = "e2e-full-flow-backfill";
+        Map<String, Object> action = post(
+                "/api/v1/scheduling-actions/backfill-workflow",
+                Map.of(
+                        "workflowCode", "order-to-gmv",
+                        "workflowVersion", 1,
+                        "startBizDate", businessDate.toString(),
+                        "endBizDate", businessDate.toString(),
+                        "progressionMode", "SERIAL",
+                        "skipPolicy", "NONE",
+                        "actionKey", actionKey,
+                        "requestedBy", "e2e",
+                        "reason", "verify complete Flow backfill"));
+        assertThat(stringValue(action, "status")).isEqualTo("APPLIED");
+        Map<String, Object> batch = awaitBackfillStatus(actionKey, "COMPLETED");
+        List<Map<String, Object>> items = getList(
+                "/api/v1/backfills/" + longValue(batch, "id") + "/items");
+        assertThat(items).hasSize(4);
+        assertThat(items).extracting(item -> stringValue(item, "nodeCode"))
+                .containsExactly("ods-orders", "dwd-order-detail", "dws-daily-gmv", "ads-gmv");
+        assertThat(items).allSatisfy(item ->
+                assertThat(stringValue(item, "status")).isEqualTo("SNAPSHOT_CONFIRMED"));
+        EXECUTION_ENDPOINT.awaitStreamingWriter("orders-ods-stream", E2E_TIMEOUT);
+    }
+
+    /** Fail one acknowledged backfill snapshot and recover it through a replacement batch. */
+    private void verifyBackfillRecovery(long flowPlanVersionId, LocalDate businessDate) {
+        String failedActionKey = "e2e-failed-node-backfill";
+        EXECUTION_ENDPOINT.suppressSnapshot(
+                failedActionKey + ":" + businessDate,
+                "dwd-order-detail");
+        Map<String, Object> failedAction = post(
+                "/api/v1/scheduling-actions/backfill-node",
+                Map.of(
+                        "flowPlanVersionId", flowPlanVersionId,
+                        "startNodeCode", "dwd-order-detail",
+                        "startBizDate", businessDate.toString(),
+                        "endBizDate", businessDate.toString(),
+                        "cascadePolicy", "TRANSITIVE_DOWNSTREAM",
+                        "progressionMode", "SERIAL",
+                        "skipPolicy", "NONE",
+                        "actionKey", failedActionKey,
+                        "requestedBy", "e2e",
+                        "reason", "inject missing target snapshot"));
+        assertThat(stringValue(failedAction, "status")).isEqualTo("APPLIED");
+
+        Map<String, Object> failedBatch = get("/api/v1/backfills/by-action/" + failedActionKey);
+        long failedBatchId = longValue(failedBatch, "id");
+        await().atMost(E2E_TIMEOUT)
+                .pollInterval(Duration.ofMillis(250))
+                .untilAsserted(() -> {
+                    Map<String, Object> firstItem = getList(
+                            "/api/v1/backfills/" + failedBatchId + "/items").get(0);
+                    TaskInstance task = taskInstanceRepository.findById(
+                            longValue(firstItem, "taskInstanceId")).orElseThrow();
+                    assertThat(task.getState()).isEqualTo(SchedulingStates.SCHEDULED);
+                });
+        Map<String, Object> failedItem = getList(
+                "/api/v1/backfills/" + failedBatchId + "/items").get(0);
+        TaskInstance failedTask = taskInstanceRepository.findById(
+                longValue(failedItem, "taskInstanceId")).orElseThrow();
+        failedTask.setScheduledAt(LocalDateTime.now().minusMinutes(3));
+        taskInstanceRepository.saveAndFlush(failedTask);
+        await().atMost(E2E_TIMEOUT)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> assertThat(snapshotSourceReconciliationService.reconcileAllSources())
+                        .anySatisfy(result -> {
+                            assertThat(result.identity().assetKey()).isEqualTo("e2e.dwd.order_detail");
+                            assertThat(result.outcome().name()).isEqualTo("HEALTHY");
+                        }));
+
+        awaitBackfillStatus(failedActionKey, "FAILED");
+        TaskInstance timedOut = taskInstanceRepository.findById(failedTask.getId()).orElseThrow();
+        assertThat(timedOut.getState()).isEqualTo(SchedulingStates.SNAPSHOT_NOT_ADVANCED);
+        assertThat(timedOut.getSourceHealth()).isEqualTo("HEALTHY");
+
+        String recoveryActionKey = "e2e-recover-node-backfill";
+        Map<String, Object> recoveryAction = post(
+                "/api/v1/scheduling-actions/recover-backfill",
+                Map.of(
+                        "backfillBatchId", failedBatchId,
+                        "recoveryStrategy", "FULL_SCOPE",
+                        "actionKey", recoveryActionKey,
+                        "requestedBy", "e2e",
+                        "reason", "verify replacement batch recovery"));
+        assertThat(stringValue(recoveryAction, "status")).isEqualTo("APPLIED");
+        Map<String, Object> recoveredBatch = awaitBackfillStatus(recoveryActionKey, "COMPLETED");
+        assertThat(longValue(recoveredBatch, "sourceBackfillBatchId")).isEqualTo(failedBatchId);
+        assertThat(getList("/api/v1/backfills/" + longValue(recoveredBatch, "id") + "/items"))
+                .hasSize(3)
+                .allSatisfy(item -> assertThat(stringValue(item, "status"))
+                        .isEqualTo("SNAPSHOT_CONFIRMED"));
+    }
+
+    /** Verify streaming and same-instance batch parent evidence stay distinct in frozen vectors. */
+    private void verifyMixedInputEvidence() {
+        List<SchedulingIntent> intents = schedulingIntentRepository.findAll();
+        SchedulingIntent ordinaryDwd = intents.stream()
+                .filter(intent -> "dwd-order-detail".equals(intent.getTaskCode()))
+                .filter(intent -> "SNAPSHOT_DRIVEN".equals(intent.getTriggerType()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(ordinaryDwd.getInputSnapshotVectorJson()).singleElement().satisfies(input -> {
+            assertThat(input.get("assetKey").toString()).contains("e2e.ods.orders");
+            assertThat(input.get("upstreamTaskInstanceId")).isNull();
+        });
+
+        SchedulingIntent ordinaryDws = intents.stream()
+                .filter(intent -> "dws-daily-gmv".equals(intent.getTaskCode()))
+                .filter(intent -> "SNAPSHOT_DRIVEN".equals(intent.getTriggerType()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(ordinaryDws.getInputSnapshotVectorJson()).singleElement().satisfies(input ->
+                assertThat(input.get("upstreamTaskInstanceId")).isNotNull());
+
+        SchedulingIntent actionDwd = intents.stream()
+                .filter(intent -> "dwd-order-detail".equals(intent.getTaskCode()))
+                .filter(intent -> "RERUN".equals(intent.getTriggerType()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(actionDwd.getInputSnapshotVectorJson()).singleElement().satisfies(input ->
+                assertThat(input.get("upstreamTaskInstanceId")).isNotNull());
+        assertThat(intents).allSatisfy(intent -> {
+            String payload = intent.getInstructionPayloadJson().toString().toLowerCase(java.util.Locale.ROOT);
+            assertThat(payload).doesNotContain("flink", "spark");
+        });
+    }
+
+    /** Wait for every task in one action-owned workflow to reach snapshot confirmation. */
+    private void awaitWorkflowSnapshots(long workflowInstanceId, int expectedTasks) {
+        await().atMost(E2E_TIMEOUT)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> {
+                    WorkflowInstance workflow = workflowInstanceRepository.findById(workflowInstanceId).orElseThrow();
+                    assertThat(workflow.getState()).isEqualTo(SchedulingStates.SNAPSHOT_CONFIRMED);
+                    assertThat(taskInstanceRepository.findByWorkflowInstanceIdOrderByCreatedAtAsc(workflowInstanceId))
+                            .hasSize(expectedTasks)
+                            .allSatisfy(task -> assertThat(task.getState())
+                                    .isEqualTo(SchedulingStates.SNAPSHOT_CONFIRMED));
+                });
+    }
+
+    /** Wait for one action-owned task to be confirmed by its target snapshot. */
+    private void awaitTaskSnapshot(long taskInstanceId) {
+        await().atMost(E2E_TIMEOUT)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> assertThat(taskInstanceRepository.findById(taskInstanceId)
+                        .orElseThrow().getState()).isEqualTo(SchedulingStates.SNAPSHOT_CONFIRMED));
+    }
+
+    /** Wait for one backfill batch to reach an expected scheduler-side terminal state. */
+    private Map<String, Object> awaitBackfillStatus(String actionKey, String expectedStatus) {
+        await().atMost(E2E_TIMEOUT)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> assertThat(stringValue(
+                        get("/api/v1/backfills/by-action/" + actionKey), "status"))
+                        .isEqualTo(expectedStatus));
+        return get("/api/v1/backfills/by-action/" + actionKey);
     }
 
     /** Create one globally unique physical-table writer through the platform API. */
@@ -603,6 +855,18 @@ class OrderToGmvE2EIT {
         return ((Number) result).longValue();
     }
 
+    /** Read one required numeric identifier list from an API response map. */
+    private List<Long> longList(Map<String, Object> value, String key) {
+        Object result = value.get(key);
+        assertThat(result).as(key).isInstanceOf(List.class);
+        return ((List<?>) result).stream()
+                .map(item -> {
+                    assertThat(item).isInstanceOf(Number.class);
+                    return ((Number) item).longValue();
+                })
+                .toList();
+    }
+
     /** Register one Paimon source-table binding in Spring's dynamic test properties. */
     private static void registerPaimonTable(
             DynamicPropertyRegistry registry,
@@ -641,6 +905,7 @@ class OrderToGmvE2EIT {
     private record ExecutionEnvironment(
             GenericContainer<?> jobManager,
             URI jobManagerRestUri,
+            URI lakehouseFlowRestUri,
             String warehouse,
             String mysqlHost,
             String mysqlDatabase,
@@ -667,6 +932,8 @@ class OrderToGmvE2EIT {
         private final Map<String, Throwable> failures = new ConcurrentHashMap<>();
         private final Map<String, JsonNode> deliveredPayloads = new ConcurrentHashMap<>();
         private final Map<String, String> activeWriterJobs = new ConcurrentHashMap<>();
+        private final Map<String, String> suspendedWriterCheckpoints = new ConcurrentHashMap<>();
+        private final Set<SuppressedInstruction> suppressedInstructions = ConcurrentHashMap.newKeySet();
         private final Set<String> successfulJobTypes = ConcurrentHashMap.newKeySet();
         private volatile ExecutionEnvironment environment;
 
@@ -747,9 +1014,14 @@ class OrderToGmvE2EIT {
                 if (activeEnvironment == null) {
                     throw new IllegalStateException("E2E execution environment is not configured");
                 }
+                if (consumeSuppression(payload)) {
+                    return;
+                }
                 String intentKind = requiredText(payload, "intentKind");
                 if ("JOB_CONTROL".equals(intentKind)) {
                     submitControl(payload, activeEnvironment);
+                } else if ("ODS_REPLAY".equals(jobType(payload))) {
+                    submitStreamingReplay(payload, activeEnvironment);
                 } else {
                     requireSuccessfulExecution(
                             intentKey,
@@ -769,7 +1041,10 @@ class OrderToGmvE2EIT {
             String operationType = requiredText(payload.path("control"), "operationType");
             String restorePath = null;
             if ("RESTART_JOB".equals(operationType)) {
-                restorePath = cancelActiveWriter(writerJobKey, environment);
+                restorePath = suspendedWriterCheckpoints.remove(writerJobKey);
+                if (restorePath == null) {
+                    restorePath = cancelActiveWriter(writerJobKey, environment);
+                }
             }
             org.testcontainers.containers.Container.ExecResult result = environment.jobManager()
                     .execInContainer(controlCommand(payload, environment, restorePath).toArray(String[]::new));
@@ -777,6 +1052,40 @@ class OrderToGmvE2EIT {
             String jobId = extractJobId(result);
             awaitLatestCheckpoint(jobId, environment);
             activeWriterJobs.put(writerJobKey, jobId);
+        }
+
+        /** Suspend the streaming writer, replay one date, and request a new controlled generation. */
+        private void submitStreamingReplay(JsonNode payload, ExecutionEnvironment environment) throws Exception {
+            String writerJobKey = requiredText(payload.path("writer"), "writerJobKey");
+            String restorePath = cancelActiveWriter(writerJobKey, environment);
+            suspendedWriterCheckpoints.put(writerJobKey, restorePath);
+            requireSuccessfulExecution(
+                    requiredText(payload, "intentKey"),
+                    environment.jobManager().execInContainer(
+                            batchCommand(payload, environment).toArray(String[]::new)));
+            requestStreamRestart(payload, environment);
+        }
+
+        /** Ask Lakehouse Flow to allocate the next stream epoch after a bounded replay. */
+        private void requestStreamRestart(JsonNode payload, ExecutionEnvironment environment) throws Exception {
+            String writerJobKey = requiredText(payload.path("writer"), "writerJobKey");
+            String intentKey = requiredText(payload, "intentKey");
+            byte[] body = OBJECT_MAPPER.writeValueAsBytes(Map.of(
+                    "requestKey", "e2e-restart-after-replay:" + intentKey,
+                    "requestedBy", "e2e-platform",
+                    "reason", "resume streaming writer after bounded backfill replay"));
+            HttpRequest request = HttpRequest.newBuilder(environment.lakehouseFlowRestUri().resolve(
+                            "api/v1/writer-jobs/" + writerJobKey + "/restart"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                    .build();
+            HttpResponse<String> response = HTTP_CLIENT.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException(
+                        "Controlled stream restart failed with " + response.statusCode() + ": " + response.body());
+            }
         }
 
         /** Wait until the submitted stream has established a durable external checkpoint. */
@@ -862,12 +1171,7 @@ class OrderToGmvE2EIT {
                     environment,
                     "JOB_CONTROL",
                     requiredText(writer, "processingMode"));
-            addArgument(command, "mysql-host", environment.mysqlHost());
-            addArgument(command, "mysql-port", "3306");
-            addArgument(command, "mysql-database", environment.mysqlDatabase());
-            addArgument(command, "mysql-table", "orders");
-            addArgument(command, "mysql-username", environment.mysqlUsername());
-            addArgument(command, "mysql-password", environment.mysqlPassword());
+            addMySqlArguments(command, environment);
             addArgument(command, "mysql-server-id", "5400");
             addArgument(command, "checkpoint-interval-ms", "500");
             addArgument(command, "checkpoint-storage", environment.warehouse() + "flink-checkpoints");
@@ -888,22 +1192,38 @@ class OrderToGmvE2EIT {
                     environment,
                     "DATA_PROCESSING",
                     requiredText(payload.path("processing"), "processingMode"));
-            JsonNode inputs = payload.path("processing").path("inputSnapshotVector");
-            String sourceTable = inputs.isArray() && !inputs.isEmpty()
-                    ? physicalTable(requiredText(inputs.get(0), "assetKey"))
-                    : actionEntrySourceTable(payload);
-            addArgument(command, "source-table", sourceTable);
+            if ("ODS_REPLAY".equals(jobType(payload))) {
+                addMySqlArguments(command, environment);
+                addArgument(command, "biz-date", requiredText(payload.path("schedule"), "bizDate"));
+            } else {
+                JsonNode inputs = payload.path("processing").path("inputSnapshotVector");
+                String sourceTable = inputs.isArray() && !inputs.isEmpty()
+                        ? physicalTable(requiredText(inputs.get(0), "assetKey"))
+                        : actionEntrySourceTable(payload);
+                addArgument(command, "source-table", sourceTable);
+            }
             return command;
         }
 
         /** Resolve the configured input for an explicit action entry that bypasses parent evidence. */
         private String actionEntrySourceTable(JsonNode payload) {
-            if ("DWD".equals(jobType(payload))
-                    && "BACKFILL".equals(requiredText(payload.path("schedule"), "triggerType"))) {
-                return "ods.orders";
-            }
-            throw new IllegalArgumentException(
-                    "Batch intent has no frozen input snapshot vector: " + requiredText(payload, "intentKey"));
+            return switch (jobType(payload)) {
+                case "DWD" -> "ods.orders";
+                case "DWS" -> "dwd.order_detail";
+                case "ADS" -> "dws.daily_gmv";
+                default -> throw new IllegalArgumentException(
+                        "Batch intent has no frozen input snapshot vector: " + requiredText(payload, "intentKey"));
+            };
+        }
+
+        /** Add the shared MySQL connection arguments used by CDC and bounded replay jobs. */
+        private void addMySqlArguments(List<String> command, ExecutionEnvironment environment) {
+            addArgument(command, "mysql-host", environment.mysqlHost());
+            addArgument(command, "mysql-port", "3306");
+            addArgument(command, "mysql-database", environment.mysqlDatabase());
+            addArgument(command, "mysql-table", "orders");
+            addArgument(command, "mysql-username", environment.mysqlUsername());
+            addArgument(command, "mysql-password", environment.mysqlPassword());
         }
 
         /** Build the invariant prefix for detached or attached Flink CLI submissions. */
@@ -964,6 +1284,7 @@ class OrderToGmvE2EIT {
                 return "ODS";
             }
             return switch (requiredText(payload.path("definition"), "taskCode")) {
+                case "ods-orders" -> "ODS_REPLAY";
                 case "dwd-order-detail" -> "DWD";
                 case "dws-daily-gmv" -> "DWS";
                 case "ads-gmv" -> "ADS";
@@ -1007,6 +1328,26 @@ class OrderToGmvE2EIT {
         void awaitSuccess(String intentKey, Duration timeout) throws Exception {
             await().atMost(timeout).until(() -> submissions.containsKey(intentKey));
             submissions.get(intentKey).get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        /** Wait until the platform has resumed the named streaming writer after replay. */
+        void awaitStreamingWriter(String writerJobKey, Duration timeout) {
+            await().atMost(timeout).until(() -> activeWriterJobs.containsKey(writerJobKey));
+        }
+
+        /** Suppress one matching snapshot commit while still acknowledging its HTTP delivery. */
+        void suppressSnapshot(String triggerEventId, String taskCode) {
+            suppressedInstructions.add(new SuppressedInstruction(triggerEventId, taskCode));
+        }
+
+        /** Consume one configured no-snapshot fault at the execution boundary. */
+        private boolean consumeSuppression(JsonNode payload) {
+            if ("JOB_CONTROL".equals(payload.path("intentKind").asText())) {
+                return false;
+            }
+            return suppressedInstructions.remove(new SuppressedInstruction(
+                    requiredText(payload.path("schedule"), "triggerEventId"),
+                    requiredText(payload.path("definition"), "taskCode")));
         }
 
         /** Run a real Paimon commit probe and require the superseded epoch to be fenced. */
@@ -1077,6 +1418,10 @@ class OrderToGmvE2EIT {
         public void close() {
             server.stop(0);
             executor.shutdownNow();
+        }
+
+        /** Test-only selector for one acknowledged instruction that publishes no snapshot. */
+        private record SuppressedInstruction(String triggerEventId, String taskCode) {
         }
     }
 }

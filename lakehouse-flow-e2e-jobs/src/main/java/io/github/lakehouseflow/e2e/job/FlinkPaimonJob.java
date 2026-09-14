@@ -45,6 +45,10 @@ import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowKind;
 
 import java.io.Serializable;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -66,6 +70,7 @@ public final class FlinkPaimonJob {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String ODS = "ODS";
+    private static final String ODS_REPLAY = "ODS_REPLAY";
     private static final String DWD = "DWD";
     private static final String DWS = "DWS";
     private static final String ADS = "ADS";
@@ -88,6 +93,7 @@ public final class FlinkPaimonJob {
         switch (arguments.required("job-type").toUpperCase(java.util.Locale.ROOT)) {
             case INIT -> initializeTables(arguments);
             case ODS -> runOdsCdc(arguments);
+            case ODS_REPLAY -> runOdsReplay(arguments);
             case DWD -> runDwdBatch(arguments);
             case DWS -> runDwsBatch(arguments);
             case ADS -> runAdsBatch(arguments);
@@ -160,6 +166,56 @@ public final class FlinkPaimonJob {
                 .name("paimon-ods-checkpoint-commit")
                 .setParallelism(1);
         environment.execute("lakehouse-flow-e2e-ods-orders-cdc");
+    }
+
+    /**
+     * Replay one business date from MySQL through a bounded Flink job into the ODS table.
+     *
+     * <p>The E2E execution plane suspends the long-running CDC generation before submitting
+     * this job. The replay therefore keeps the same stable writer identity without allowing
+     * two physical writers to commit concurrently.
+     *
+     * @param arguments immutable streaming-node action intent arguments
+     * @throws Exception when the source read, Flink transformation, or Paimon commit fails
+     */
+    private static void runOdsReplay(JobArguments arguments) throws Exception {
+        List<OrderRecord> sourceRows = readOrdersFromMySql(arguments);
+        StreamExecutionEnvironment environment = batchEnvironment();
+        DataStream<OrderRecord> replayRows = environment
+                .fromCollection(sourceRows, TypeInformation.of(OrderRecord.class))
+                .returns(TypeInformation.of(OrderRecord.class));
+        PaimonWarehouse.commitOrders(arguments, collect(replayRows));
+    }
+
+    /** Read the selected business date directly from the authoritative MySQL order table. */
+    private static List<OrderRecord> readOrdersFromMySql(JobArguments arguments) throws Exception {
+        String jdbcUrl = "jdbc:mysql://%s:%s/%s?useSSL=false&allowPublicKeyRetrieval=true"
+                .formatted(
+                        arguments.required("mysql-host"),
+                        arguments.required("mysql-port"),
+                        arguments.required("mysql-database"));
+        List<OrderRecord> rows = new ArrayList<>();
+        try (Connection connection = DriverManager.getConnection(
+                        jdbcUrl,
+                        arguments.required("mysql-username"),
+                        arguments.required("mysql-password"));
+                PreparedStatement statement = connection.prepareStatement(
+                        "SELECT order_id, user_id, amount_cents, order_date, status "
+                                + "FROM orders WHERE order_date = ? ORDER BY order_id")) {
+            statement.setString(1, arguments.required("biz-date"));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    rows.add(new OrderRecord(
+                            resultSet.getLong("order_id"),
+                            resultSet.getLong("user_id"),
+                            resultSet.getLong("amount_cents"),
+                            resultSet.getString("order_date"),
+                            resultSet.getString("status"),
+                            false));
+                }
+            }
+        }
+        return List.copyOf(rows);
     }
 
     /**
@@ -651,6 +707,13 @@ public final class FlinkPaimonJob {
             return read(warehouse, tableName, row -> new GmvMetricRecord(
                     row.getString(0).toString(),
                     row.getLong(2)));
+        }
+
+        /** Commit replayed ODS orders and exact scheduling-intent properties. */
+        static void commitOrders(JobArguments arguments, List<OrderRecord> values) throws Exception {
+            commitRows(arguments, TableKind.ODS, values.stream()
+                    .map(PaimonWarehouse::orderRow)
+                    .toList());
         }
 
         /** Commit cleansed details and exact scheduling-intent properties. */

@@ -1,10 +1,10 @@
 # Outbound Intent 下游契约
 
-**当前 SchedulingIntent 契约版本**: 1.3；字段与兼容策略已形成开发冻结候选，最终冻结等待整体 E2E
+**当前 SchedulingIntent 契约版本**: 1.3；字段与兼容策略已完成 LF-1.0 冻结
 **LF-1.0 目标 SchedulingIntent 契约版本**: 1.3
-**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；字段与兼容策略已形成开发冻结候选，最终冻结等待整体 E2E
+**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；字段与兼容策略已完成 LF-1.0 冻结
 **适用通道**: Database Outbox、HTTP、MQ
-**LF-1.0 状态**: 两类契约的 JSON Schema、REST surface、未知字段和 migration 兼容回归已完成；DATABASE_TABLE、剩余 action 与流批边界留待整体 E2E 后正式冻结
+**LF-1.0 状态**: 两类契约的 JSON Schema、REST surface、未知字段和 migration 兼容回归已完成；DATABASE_TABLE、HTTP、action、流批边界及 V22 到 V23 升级已通过整体 E2E
 
 ## 1. 契约目标
 
