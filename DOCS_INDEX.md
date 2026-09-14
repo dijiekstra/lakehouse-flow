@@ -1,118 +1,115 @@
 # Lakehouse Flow 文档索引
 
-**最后更新**: 2026-09-14
+**最后更新**：2026-09-14
+
+## 文档组织原则
+
+根目录只保留当前有效的项目入口、概念与架构、协议参考、开发测试、运维和发布文档。已经失效的阶段总结不再留在工作树中，需要追溯时使用 Git 历史。
+
+文档采用以下约定：
+
+- 面向中文读者，特殊术语首次出现时写作“中文名称（English Term）”。
+- 类名、字段名、枚举值、配置键和 JSON 属性保持英文原文，并使用反引号标识。
+- 版本完成度只在 `PHASE2_PROGRESS.md` 维护，其他文档不复制易失真的测试数量和待办。
+- 文档不得把 Lakehouse Flow 描述为执行器，也不得使用下游作业状态替代目标 snapshot 证据。
+- 已实现、已测试、已通过整体 E2E 和已在生产验证是四种不同结论，必须明确区分。
+
+组织方式参考了成熟开源项目的当前文档实践：使用 [Kubernetes 文档风格指南](https://kubernetes.io/docs/contribute/style/style-guide/) 约束表达与链接，使用 [Kubernetes 术语表](https://kubernetes.io/docs/reference/glossary/) 和 [Flink 术语表](https://nightlies.apache.org/flink/flink-docs-master/docs/concepts/glossary/) 的概念入口方式服务新读者，并借鉴 [Apache Airflow README](https://github.com/apache/airflow/blob/main/README.md) 的短入口加分层导航。[Apache DolphinScheduler](https://github.com/apache/dolphinscheduler) 只用于核对调度 Action 能力，不复制其执行器或工作流状态模型。
 
 ## 文档真源
 
-文档按以下优先级解释：
+发生冲突时按以下顺序处理：
 
-1. `PHASE2_PROGRESS.md`：版本目标、优先级、当前完成度、差距和验证快照的唯一真源。
-2. `ARCHITECTURE.md`、`SCHEDULING_MODEL_DESIGN.md`：当前架构与对象模型不变量。
-3. `SCHEDULING_INTENT_CONTRACT.md`、`LF1_COMPATIBILITY.md`：Lakehouse Flow 与下游之间的协议、REST 和版本兼容真源。
-4. `RELEASE_CHECKLIST.md`、`OPERATIONS_RUNBOOK.md`、`DATABASE_OPERATIONS.md`、`OBSERVABILITY.md`：发布、生产接入、故障处置、数据库操作、指标与告警边界。
-5. `README.md`、`DEVELOPMENT.md`、`QUICKSTART.md`、`TECH_STACK.md`：当前入口、开发、启动和技术说明。
-6. 标记为“历史文档”或“参考文档”的文件：只用于追溯，不得驱动实现。
+1. 机器可读 API/JSON Schema、Flyway migration 和当前代码决定实际行为。
+2. `ARCHITECTURE.md` 与 `SCHEDULING_MODEL_DESIGN.md` 定义架构和领域不变量。
+3. `SCHEDULING_INTENT_CONTRACT.md` 与 `LF1_COMPATIBILITY.md` 定义对外协议和兼容边界。
+4. `PHASE2_PROGRESS.md` 记录版本目标、完成度、剩余工作和验证快照。
+5. 运维、开发和入口文档不得覆盖上述契约，只负责说明如何使用。
 
-如果历史文档与当前文档冲突，必须服从上述当前真源。任何文档都不能把 Lakehouse Flow 描述为任务执行器，也不能使用下游 `RUNNING/SUCCESS/FAILED` 回调代替目标业务 snapshot 推进。
+发现文档与实现不一致时，应先判断是实现缺陷还是文档过期，再修改拥有该规则的真源文档和对应测试。
 
-## 当前文档
+## 文档目录
 
-| 文档 | 状态 | 回答的问题 |
-|---|---|---|
-| [README.md](./README.md) | 当前入口 | 系统是什么、能做什么、不能做什么 |
-| [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) | 进度真源 | 当前做到哪里、下一步是什么、验收证据是什么 |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | 架构真源 | 组件、事务、扫描循环、归因与互斥如何协作 |
-| [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | 模型真源 | FlowPlan、Node、实例、action、补数和 DAG 的语义 |
-| [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 协议真源 | 数据处理与作业控制两类出站意图如何投递、幂等，以及目标 snapshot 必须写什么 |
-| [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md) | 兼容真源 | `/api/v1`、两类 intent、未知字段和 V1～V23 migration 如何演进 |
-| [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) | 发布验收清单 | 如何生成、核验、试运行和最终发布 LF-1.0 |
-| [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) | 生产运维手册 | 如何配置投递与 source、启动/重启 writer，以及处置阻塞、死信和补数 |
-| [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md) | 数据库运维策略 | 如何升级、备份、恢复 PostgreSQL，以及哪些数据可以归档清理 |
-| [OBSERVABILITY.md](./OBSERVABILITY.md) | 可观测性与告警 | 指标代表什么、Prometheus 规则如何加载、告警去哪里取证 |
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | 当前开发指南 | 本地环境、代码约束和验证方式 |
-| [QUICKSTART.md](./QUICKSTART.md) | 当前启动指南 | 如何启动 PostgreSQL、构建、运行和排查 |
-| [TECH_STACK.md](./TECH_STACK.md) | 当前技术基线 | 实际依赖、模块边界、已实现与未实现的基础设施 |
+### 项目入口
 
-## 历史文档
+| 文档 | 回答的问题 |
+| --- | --- |
+| [README.md](./README.md) | 系统是什么、边界是什么、如何开始、去哪里继续阅读 |
+| [GLOSSARY.md](./GLOSSARY.md) | Intent、snapshot、归因、准入、补数等术语是什么意思 |
+| [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) | LF-1.0 做到哪里、还缺什么、最近验证证据是什么 |
 
-以下文件保留早期决策过程和阶段记录，但不代表当前能力：
+### 概念与架构
 
-| 文档 | 历史内容 |
-|---|---|
-| [ARCHITECTURE_CLARIFICATION.md](./ARCHITECTURE_CLARIFICATION.md) | 早期 READY 查询和 callback 方案 |
-| [CLARIFICATION_SUMMARY.md](./CLARIFICATION_SUMMARY.md) | 早期架构澄清过程 |
-| [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md) | 含已失效示例的原则草案 |
-| [GLOSSARY.md](./GLOSSARY.md) | 旧 executor 和运行状态术语 |
-| [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md) | 旧状态判断和 READY API 实现讨论 |
-| [PHASE1_IMPLEMENTATION.md](./PHASE1_IMPLEMENTATION.md) | 旧 Phase 1 计划 |
-| [PHASE1_COMPLETION.md](./PHASE1_COMPLETION.md) | 旧 Phase 1 完成快照 |
-| [PHASE2_DESIGN.md](./PHASE2_DESIGN.md) | 旧 Phase 2 callback/执行状态设计 |
-| [PHASE2_ROADMAP.md](./PHASE2_ROADMAP.md) | 已被当前进度基准替代的路线图 |
-| [PHASE2_DELIVERY_PATTERN.md](./PHASE2_DELIVERY_PATTERN.md) | 已废弃的 READY API 交付讨论 |
-| [PHASE2_STEP3_SUMMARY.md](./PHASE2_STEP3_SUMMARY.md) | 早期 source 实现快照 |
-| [CHECKLIST.md](./CHECKLIST.md) | 旧项目交付清单 |
-| [PROJECT_STATUS.md](./PROJECT_STATUS.md) | 旧项目状态快照 |
-| [DELIVERY_REPORT.md](./DELIVERY_REPORT.md) | Phase 0 文档交付报告 |
-| [SKELETON_COMPLETION_REPORT.md](./SKELETON_COMPLETION_REPORT.md) | 项目骨架阶段报告 |
+| 文档 | 回答的问题 |
+| --- | --- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | 组件、事务、扫描循环、归因、恢复和互斥如何协作 |
+| [SCHEDULING_MODEL_DESIGN.md](./SCHEDULING_MODEL_DESIGN.md) | FlowPlan、Node、实例、Action、补数和流批混编 DAG 的语义 |
+| [TECH_STACK.md](./TECH_STACK.md) | 当前依赖、模块边界和基础设施选择是什么 |
 
-历史文档中的 `AssetDependency` 运行时路径、executor、外部 job、READY 拉取 API、状态回调和旧表清单均不应恢复。
+### 协议与兼容
 
-## 参考资料
+| 文档 | 回答的问题 |
+| --- | --- |
+| [SCHEDULING_INTENT_CONTRACT.md](./SCHEDULING_INTENT_CONTRACT.md) | 两类调度意图如何投递、下游如何幂等消费和写入 snapshot 归因 |
+| [LF1_COMPATIBILITY.md](./LF1_COMPATIBILITY.md) | `/api/v1`、intent schema、未知字段和 migration 如何演进 |
 
-| 文档 | 使用边界 |
-|---|---|
-| [lakehouse-asset-event-scheduling.md](./lakehouse-asset-event-scheduling.md) | DolphinScheduler 扩展 RFC；只参考背景与 action，不参考执行架构 |
-| [现代CDC湖仓架构下的数仓与数据平台演进.md](./现代CDC湖仓架构下的数仓与数据平台演进.md) | CDC 湖仓、数仓与数据平台背景资料 |
+### 开发与测试
 
-## 按角色阅读
+| 文档 | 回答的问题 |
+| --- | --- |
+| [DEVELOPMENT.md](./DEVELOPMENT.md) | 开发环境、代码约束、单元测试和质量门禁是什么 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 贡献代码时必须遵守哪些范围、注释、测试和文档规则 |
+| [QUICKSTART.md](./QUICKSTART.md) | 如何配置 PostgreSQL、构建并启动应用 |
+| [E2E_TEST_CASES.md](./E2E_TEST_CASES.md) | 整体 E2E 的拓扑、用例、断言、覆盖状态和补强顺序是什么 |
 
-### 产品与架构讨论
+### 运维与发布
+
+| 文档 | 回答的问题 |
+| --- | --- |
+| [OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md) | 如何接入投递和 source、启停 writer、巡检并处置故障 |
+| [DATABASE_OPERATIONS.md](./DATABASE_OPERATIONS.md) | PostgreSQL 如何升级、备份、恢复和保留数据 |
+| [OBSERVABILITY.md](./OBSERVABILITY.md) | 指标、Prometheus 规则、告警和证据入口是什么 |
+| [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) | 如何生成、核验、试运行和发布 LF-1.0 |
+
+## 推荐阅读顺序
+
+产品与架构讨论：
 
 1. `README.md`
-2. `SCHEDULING_MODEL_DESIGN.md`
-3. `PHASE2_PROGRESS.md`
+2. `GLOSSARY.md`
+3. `SCHEDULING_MODEL_DESIGN.md`
+4. `ARCHITECTURE.md`
+5. `PHASE2_PROGRESS.md`
 
-### 后端开发
+下游平台接入：
 
-1. `PHASE2_PROGRESS.md`
+1. `GLOSSARY.md` 的 Intent、Delivery、Attribution 和 Writer
+2. `SCHEDULING_INTENT_CONTRACT.md`
+3. `LF1_COMPATIBILITY.md`
+4. `OPERATIONS_RUNBOOK.md`
+
+开发与测试：
+
+1. `DEVELOPMENT.md`
 2. `ARCHITECTURE.md`
-3. 对应领域的 `SCHEDULING_MODEL_DESIGN.md` 或 `SCHEDULING_INTENT_CONTRACT.md`
-4. `DEVELOPMENT.md`
-5. 相关代码和测试
+3. `E2E_TEST_CASES.md`
+4. 对应领域的模型或契约文档
+5. 当前代码和测试
 
-### 下游集成
-
-1. `SCHEDULING_INTENT_CONTRACT.md`
-2. `LF1_COMPATIBILITY.md`
-3. `ARCHITECTURE.md`
-4. `QUICKSTART.md`
-
-### 测试与投产验收
-
-1. `PHASE2_PROGRESS.md` 的 `LF-1.0 目标与发布门槛`
-2. `PHASE2_PROGRESS.md` 的当前验证快照
-3. `SCHEDULING_MODEL_DESIGN.md` 的不变量
-4. `ARCHITECTURE.md` 的事务、互斥和失败关闭路径
-5. `SCHEDULING_INTENT_CONTRACT.md` 的归因、Flink/Paimon writer 和租约要求
-6. `RELEASE_CHECKLIST.md` 的候选制品、试运行和最终发布门禁
-
-### 生产运维
+生产运维：
 
 1. `OPERATIONS_RUNBOOK.md`
-2. `RELEASE_CHECKLIST.md`
-3. `OBSERVABILITY.md`
-4. `DATABASE_OPERATIONS.md`
-5. `SCHEDULING_INTENT_CONTRACT.md`
-6. `PHASE2_PROGRESS.md`
+2. `OBSERVABILITY.md`
+3. `DATABASE_OPERATIONS.md`
+4. `RELEASE_CHECKLIST.md`
 
 ## 更新规则
 
-- 版本目标、优先级和完成度只更新 `PHASE2_PROGRESS.md`，其他文档通过链接引用。
-- 架构或对象语义变化必须同步更新对应权威文档和测试。
-- 下游 payload 或归因属性变化必须同步更新 `SCHEDULING_INTENT_CONTRACT.md`。
-- REST 路由、请求兼容、intent schema、版本或 migration 冻结基线变化必须同步更新 `LF1_COMPATIBILITY.md` 和机器可读契约。
-- 依赖、模块或构建方式变化必须同步更新 `TECH_STACK.md`、`DEVELOPMENT.md` 或 `QUICKSTART.md`。
-- 投递、source、writer、故障处置或数据库运维规则变化必须同步更新两份生产运维手册。
-- 指标名称、标签、告警条件或证据入口变化必须同步更新 `OBSERVABILITY.md` 和 Prometheus 规则文件。
-- 阶段总结一旦过期，保留内容但在标题后明确标记为历史。
-- 未经过测试或真实环境验证的能力必须写成“未验证”或“未实现”，不得写成“生产就绪”。
+- 领域概念变化：更新 `SCHEDULING_MODEL_DESIGN.md`、`GLOSSARY.md` 和对应测试。
+- 组件或事务边界变化：更新 `ARCHITECTURE.md`。
+- payload、归因属性或下游幂等要求变化：更新 `SCHEDULING_INTENT_CONTRACT.md`、机器可读 schema 和兼容测试。
+- REST、版本或 migration 基线变化：更新 `LF1_COMPATIBILITY.md`、机器可读契约和 migration 测试。
+- 模块、依赖或构建方式变化：更新 `TECH_STACK.md`、`DEVELOPMENT.md` 或 `QUICKSTART.md`。
+- E2E 场景变化：先更新 `E2E_TEST_CASES.md`，再修改测试；完成后回填入口和状态。
+- 指标或告警变化：更新 `OBSERVABILITY.md` 与 Prometheus 规则。
+- 版本目标和验证结论变化：只更新 `PHASE2_PROGRESS.md`，并附可复现命令或 CI 证据。

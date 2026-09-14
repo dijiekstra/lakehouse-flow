@@ -17,9 +17,9 @@
 1. 候选提交必须来自干净工作区，Maven reactor 版本必须位于 `1.0.0-SNAPSHOT` 或 `1.0.0-rcN` 版本线。
 2. 手动运行 GitHub Actions 的 `LF-1.0 Release Candidate` workflow。候选标签使用 `v1.0.0-rcN` 时，标签与 Maven 版本必须完全一致。
 3. workflow 必须在 JDK 17 下执行不带 `-DskipITs` 的 `./mvnw -B -ntp clean verify`，任何单测、覆盖率门槛或整体 Testcontainers E2E 失败都阻断发布。
-4. 当前验收基线是 396 个单元/启动测试、8 个整体 E2E、Service line 91.37%、branch 68.98%。测试数量可以随实现增加，但不能通过删除测试或放宽门槛制造通过结果。
+4. 当前验收基线以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 的最新验证快照为准。测试数量可以随实现增加，但不能通过删除测试或放宽门槛制造通过结果。
 5. 候选制品必须是可执行 Spring Boot JAR，并包含 REST surface、SchedulingIntent schema 和 JobControlIntent schema 三份冻结契约。
-6. 候选包必须包含 build identity、关键接入文档和 `SHA256SUMS`；下载后重新计算校验和再部署。
+6. 候选包必须包含 build identity、文档索引、中文术语、下游契约、E2E 用例、运维文档和 `SHA256SUMS`；下载后重新计算校验和再部署。
 7. Flyway 必须从空库完整迁移到 V23，并至少验证一次受支持的 V22 到 V23 升级路径。已发布 migration 禁止改写。
 
 2026-09-14 已在 GitHub Actions Linux runner/JDK 17 上首次完整通过上述门禁，并生成经 `SHA256SUMS` 复核的候选制品。后续任何候选提交仍必须重新运行该门禁，不能沿用旧提交的结论或产物。

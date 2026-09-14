@@ -1,6 +1,6 @@
 # Lakehouse Flow 技术基线
 
-**最后核对**: 2026-09-13
+**最后核对**: 2026-09-14
 
 本文只记录当前仓库实际采用的技术与明确缺口。依赖版本以根 `pom.xml` 为唯一事实来源，阶段目标以 `PHASE2_PROGRESS.md` 为准。
 
@@ -38,10 +38,10 @@ Lakehouse Flow 是独立的 snapshot 推进式调度决策系统。技术选型�
 |---|---|---|
 | 主数据库 | PostgreSQL 15 本地基线 | JSONB、唯一约束、行锁和事务是正确性的一部分 |
 | ORM | Spring Data JPA / Hibernate | Entity 与 Repository 持久化 |
-| Schema 迁移 | Flyway 9.22.0 | 当前迁移范围为 V1.0 至 V20.0 |
+| Schema 迁移 | Flyway 9.22.0 | 当前迁移范围为 V1.0 至 V23.0，只允许前向迁移 |
 | 本地测试数据库 | H2 | 仅用于 Boot 上下文等测试，不替代 PostgreSQL 语义验收 |
 
-事件落库、资产状态投影、FlowPlan 评估和 source offset 推进位于同一摄入事务。目标日期互斥使用 PostgreSQL 持久化槽位；真实多 scheduler 锁竞争仍待整体 Testcontainers E2E。
+事件落库、资产状态投影、FlowPlan 评估和 source offset 推进位于同一摄入事务。目标日期互斥使用 PostgreSQL 持久化槽位；事务回滚、offset 恢复、租约重占和真实多 scheduler 锁竞争已由 PostgreSQL 16 Testcontainers E2E 覆盖。生产支持基线仍以 PostgreSQL 15 及兼容版本为准。
 
 当前没有 Redis 依赖，也没有把缓存放入正确性链路。
 
@@ -51,22 +51,22 @@ Lakehouse Flow 是独立的 snapshot 推进式调度决策系统。技术选型�
 
 | 格式 | 当前状态 |
 |---|---|
-| Apache Paimon 1.3.1 | 已实现 Catalog API source、properties、delta manifest 分区推导和 retention gap 失败关闭；真实 writer-side 属性注入与整体 E2E 未完成 |
-| Apache Flink | 当前未引入依赖；`LF-1.0` 固定使用 Flink CDC 持续流式写入 ODS，并增加同时支持流式 checkpoint 与批式 job-end 的 Flink/Paimon writer-side adapter |
+| Apache Paimon 1.3.1 | 已实现 Catalog API source、properties、delta manifest 分区推导、retention gap 失败关闭和 writer-side 属性注入；真实整体 E2E 已覆盖 |
+| Apache Flink 1.20.3 | E2E 作业模块使用同一套流批 API；ODS 通过 Flink CDC 3.4.0 持续写入，DWD/DWS/ADS 使用有界批作业 |
 | Apache Iceberg | 未实现 adapter |
 | Apache Hudi | 未实现 adapter |
 
 原生 snapshot/instant 标识、operation 和分区差异只能在 integration adapter 内解释。公共调度代码使用适配器提供的单调坐标和 typed `dataChange`，不能写死 Paimon 语义。
 
-`LF-1.0` 的 Flink 集成还必须遵守单表单写入者：规范化 `tableAssetKey` 只能绑定一个稳定 `writerJobKey`，同一作业的启动、重启和流批模式切换使用单调 writer epoch。Lakehouse Flow 只保存 binding、epoch 和独立 `JobControlIntent`，真实 Flink 操作及旧 epoch fencing 由平台执行面完成；现有绑定 `TaskInstance` 的 `SchedulingIntent` 继续只表达数据处理范围。
+`LF-1.0` 的 Flink 集成遵守单表单写入者：规范化 `tableAssetKey` 只能绑定一个稳定 `writerJobKey`，同一作业的启动、重启和流批模式切换使用单调 writer epoch。Lakehouse Flow 只保存 binding、epoch 和独立 `JobControlIntent`，真实 Flink 操作由平台执行面完成；Paimon writer adapter 在 commit 期间执行旧 epoch fencing。绑定 `TaskInstance` 的 `SchedulingIntent` 继续只表达数据处理范围。
 
 Flink 是 `LF-1.0` 的参考执行与 Paimon 写入实现，不是 Flow 领域类型。`ScheduleNode`、`WriterJobBinding` 和通用 outbound intent 只出现 `STREAMING|BATCH`；实际引擎、作业包、入口和提交钩子由 `writerJobKey` 对应的平台执行适配器解析。后续接入 Spark 或其他引擎不得修改 DAG、action、snapshot 结果或通用 intent schema。
 
-[Apache Paimon 1.3 兼容矩阵](https://paimon.apache.org/docs/1.3/ecosystem/overview/) 列出了 Flink 1.15-1.20 的读写支持，其 [Flink API 文档](https://paimon.apache.org/docs/1.3/program-api/flink-api/) 要求 Paimon connector artifact 与 Flink minor version 匹配。开始 Flink adapter 前先用 Flink CDC 流式 ODS、流式 checkpoint 写入和批式 job-end 写入三个最小探针锁定一组确切版本，再固化到根 POM 和 E2E；未验证前不在文档中假定具体 Flink minor 版本。
+仓库已在根 POM 锁定 Paimon 1.3.1、Flink 1.20.3 和 Flink CDC 3.4.0。升级任何一项都必须重新运行 writer adapter、CDC checkpoint 恢复、批式提交、Paimon source 和整体 E2E，不能只依赖依赖解析成功。
 
 ## 调度意图交付
 
-每条不可变 outbound intent 只选择一个 route。当前 `SchedulingIntent` 已实现以下通道；G20 的 `JobControlIntent` 将保留独立领域记录和 delivery 外键，但复用同一 publisher SPI、claim/fencing/退避/死信算法：
+每条不可变 outbound intent 只选择一个 route。`SchedulingIntent` 与 `JobControlIntent` 保留独立领域记录和 delivery 外键，并复用同一 publisher SPI、claim/fencing/退避/死信算法：
 
 | 通道 | 当前实现 |
 |---|---|
@@ -91,8 +91,8 @@ Flink 是 `LF-1.0` 的参考执行与 Paimon 写入实现，不是 Flow 领域�
 | 单元测试 | JUnit 5 + Mockito |
 | Service 测试约束 | 每个显式 public service 方法必须有直接测试入口 |
 | 覆盖率 | JaCoCo service line >= 90%，branch >= 65% |
-| 系统级 E2E | Testcontainers 依赖已预留；整体 E2E 尚未实现，现为 `LF-1.0` 发布门槛 |
-| CI | GitHub Actions 使用 JDK 17 执行 `./mvnw -B -ntp clean verify` |
+| 系统级 E2E | `lakehouse-flow-e2e` 使用 Testcontainers 验证 PostgreSQL/MySQL/Flink/Paimon、DB/HTTP 投递和多 scheduler 恢复 |
+| CI | 日常 GitHub Actions 使用 JDK 17 执行 `./mvnw -B -ntp clean verify -DskipITs`；发布候选运行完整 E2E |
 | 交付物 | 验证成功后构建并检查可执行 Spring Boot JAR |
 
 当前验证快照和测试数量只记录在 `PHASE2_PROGRESS.md`，避免在多个文档中复制后失真。
@@ -104,11 +104,14 @@ Flink 是 `LF-1.0` 的参考执行与 Paimon 写入实现，不是 Flow 领域�
 | `lakehouse-flow-common` | 公共常量、异常和工具 |
 | `lakehouse-flow-model` | 调度、snapshot、action、backfill 和 delivery 持久化模型 |
 | `lakehouse-flow-dao` | Spring Data Repository 与 Flyway migration |
-| `lakehouse-flow-service` | 资产状态、FlowPlan、DAG、action、snapshot 证据与策略服务 |
-| `lakehouse-flow-api` | FlowPlan/Node、action、实例和审计 REST API |
+| `lakehouse-flow-service` | 资产状态、FlowPlan、DAG、action、writer control、snapshot 证据与策略服务 |
+| `lakehouse-flow-api` | FlowPlan/Node、action、实例、writer control 和运维审计 REST API |
 | `lakehouse-flow-scheduler` | intent outbox、外部投递、snapshot 确认和指标扫描 |
-| `lakehouse-flow-integration` | 湖格式 source SPI、Paimon adapter 和 source 对账 |
-| `lakehouse-flow-test` | `LF-1.0` 整体 Testcontainers E2E 的共享装配入口 |
+| `lakehouse-flow-integration` | 湖格式 source SPI、Paimon adapter、摄取和 source 对账 |
+| `lakehouse-flow-flink-paimon` | 下游复用的 Paimon writer adapter、归因属性和 writer epoch fencing |
+| `lakehouse-flow-test` | 跨模块共享测试夹具，不承载整体 E2E |
+| `lakehouse-flow-e2e-jobs` | 提交到真实 Flink 容器的 CDC、批处理和 Paimon writer 测试作业 |
+| `lakehouse-flow-e2e` | 整体 Testcontainers E2E 装配和验收入口 |
 | `lakehouse-flow-boot` | Spring Boot 启动、运行配置和可执行 JAR |
 
 模块边界不包含执行器适配层。
@@ -127,7 +130,7 @@ Flink 是 `LF-1.0` 的参考执行与 Paimon 写入实现，不是 Flow 领域�
 - 不承诺 Redis、Kafka、Pulsar、RabbitMQ、Kubernetes、GraalVM 或 tracing 集成。
 - 不声明尚未测量的吞吐、延迟或容量 SLA。
 - 不把 H2 测试或 Mockito 测试描述成真实 PostgreSQL/Paimon E2E。
-- `LF-1.0` 必须完成 Flink/Paimon、DB/HTTP 和多 scheduler PostgreSQL 整体 Testcontainers E2E。
+- `LF-1.0` 的 Flink/Paimon、DB/HTTP 和多 scheduler PostgreSQL 整体 E2E 已实现；当前补强用例见 `E2E_TEST_CASES.md`。
 - Iceberg/Hudi、具体 MQ 产品绑定、可信身份/RBAC 和运维 UI 后移至 1.1+。
 - 容量基线只在真实生产负载下采集，当前不声称未经测量的 SLA。
 

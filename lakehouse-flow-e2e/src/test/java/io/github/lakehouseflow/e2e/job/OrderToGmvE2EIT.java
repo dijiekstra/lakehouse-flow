@@ -115,6 +115,7 @@ class OrderToGmvE2EIT {
     private static final String JOB_JAR_IN_CONTAINER = "/opt/lakehouse-flow/e2e-jobs.jar";
     private static final String CATALOG = "e2e";
     private static final String BIZ_DATE_TEMPLATE = "dt=${bizDate}";
+    private static final String FAILED_BACKFILL_ACTION_KEY = "e2e-failed-node-backfill";
     private static final Duration E2E_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration STREAM_START_TIMEOUT = Duration.ofSeconds(30);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -234,6 +235,9 @@ class OrderToGmvE2EIT {
         registry.add("lakehouse-flow.scheduling-intent-delivery.destination", EXECUTION_ENDPOINT::url);
         registry.add("lakehouse-flow.scheduling-intent-delivery.publisher.enabled", () -> true);
         registry.add("lakehouse-flow.scheduling-intent-delivery.publisher.fixed-delay-ms", () -> 100);
+        registry.add("lakehouse-flow.scheduling-intent-delivery.publisher.max-attempts", () -> 2);
+        registry.add("lakehouse-flow.scheduling-intent-delivery.publisher.initial-backoff", () -> "PT0.05S");
+        registry.add("lakehouse-flow.scheduling-intent-delivery.publisher.maximum-backoff", () -> "PT0.05S");
         registry.add("lakehouse-flow.job-control-intent-delivery.channel", () -> "HTTP");
         registry.add("lakehouse-flow.job-control-intent-delivery.destination", EXECUTION_ENDPOINT::url);
         registry.add("lakehouse-flow.job-control-intent-delivery.publisher.enabled", () -> true);
@@ -349,6 +353,7 @@ class OrderToGmvE2EIT {
         verifyFullFlowBackfill(businessDate);
         verifyBackfillRecovery(flowPlanVersionId, businessDate);
         verifyMixedInputEvidence();
+        inspectsOperationalEvidenceWithoutDatabaseAccess(flowPlanVersionId, businessDate);
         EXECUTION_ENDPOINT.verifyGmv(businessDate, 15_500L);
         assertThat(EXECUTION_ENDPOINT.successfulJobTypes())
                 .contains("ODS", "ODS_REPLAY", "DWD", "DWS", "ADS");
@@ -559,9 +564,8 @@ class OrderToGmvE2EIT {
 
     /** Fail one acknowledged backfill snapshot and recover it through a replacement batch. */
     private void verifyBackfillRecovery(long flowPlanVersionId, LocalDate businessDate) {
-        String failedActionKey = "e2e-failed-node-backfill";
         EXECUTION_ENDPOINT.suppressSnapshot(
-                failedActionKey + ":" + businessDate,
+                FAILED_BACKFILL_ACTION_KEY + ":" + businessDate,
                 "dwd-order-detail");
         Map<String, Object> failedAction = post(
                 "/api/v1/scheduling-actions/backfill-node",
@@ -573,12 +577,13 @@ class OrderToGmvE2EIT {
                         "cascadePolicy", "TRANSITIVE_DOWNSTREAM",
                         "progressionMode", "SERIAL",
                         "skipPolicy", "NONE",
-                        "actionKey", failedActionKey,
+                        "actionKey", FAILED_BACKFILL_ACTION_KEY,
                         "requestedBy", "e2e",
                         "reason", "inject missing target snapshot"));
         assertThat(stringValue(failedAction, "status")).isEqualTo("APPLIED");
 
-        Map<String, Object> failedBatch = get("/api/v1/backfills/by-action/" + failedActionKey);
+        Map<String, Object> failedBatch = get(
+                "/api/v1/backfills/by-action/" + FAILED_BACKFILL_ACTION_KEY);
         long failedBatchId = longValue(failedBatch, "id");
         await().atMost(E2E_TIMEOUT)
                 .pollInterval(Duration.ofMillis(250))
@@ -592,6 +597,19 @@ class OrderToGmvE2EIT {
         Map<String, Object> failedItem = getList(
                 "/api/v1/backfills/" + failedBatchId + "/items").get(0);
         long failedTaskId = longValue(failedItem, "taskInstanceId");
+        List<SchedulingIntent> blockedBatchIntents = schedulingIntentRepository.findAll().stream()
+                .filter(intent -> Long.valueOf(failedBatchId).equals(intent.getBackfillBatchId()))
+                .toList();
+        assertThat(blockedBatchIntents).singleElement().satisfies(intent ->
+                assertThat(intent.getTaskCode()).isEqualTo("dwd-order-detail"));
+        assertThat(getList("/api/v1/backfills/" + failedBatchId + "/items"))
+                .filteredOn(item -> !"dwd-order-detail".equals(stringValue(item, "nodeCode")))
+                .allSatisfy(item -> {
+                    assertThat(stringValue(item, "status")).isEqualTo("WAITING_DEPENDENCY");
+                    TaskInstance downstream = taskInstanceRepository.findById(
+                            longValue(item, "taskInstanceId")).orElseThrow();
+                    assertThat(downstream.getState()).isEqualTo(SchedulingStates.WAITING_SNAPSHOT);
+                });
         transactionTemplate.executeWithoutResult(status -> {
             TaskInstance failedTask = taskInstanceRepository.findByIdForUpdate(failedTaskId).orElseThrow();
             failedTask.setScheduledAt(LocalDateTime.now().minusMinutes(3));
@@ -604,7 +622,7 @@ class OrderToGmvE2EIT {
                             assertThat(result.outcome().name()).isEqualTo("HEALTHY");
                         }));
 
-        awaitBackfillStatus(failedActionKey, "FAILED");
+        awaitBackfillStatus(FAILED_BACKFILL_ACTION_KEY, "FAILED");
         TaskInstance timedOut = taskInstanceRepository.findById(failedTaskId).orElseThrow();
         assertThat(timedOut.getState()).isEqualTo(SchedulingStates.SNAPSHOT_NOT_ADVANCED);
         assertThat(timedOut.getSourceHealth()).isEqualTo("HEALTHY");
@@ -625,6 +643,134 @@ class OrderToGmvE2EIT {
                 .hasSize(3)
                 .allSatisfy(item -> assertThat(stringValue(item, "status"))
                         .isEqualTo("SNAPSHOT_CONFIRMED"));
+    }
+
+    /**
+     * Inspect failed snapshot evidence, source health, dead letters, blockers, and backfill audit through REST.
+     *
+     * <p>The probe creates a transport-only failure after the real Paimon recovery scenario has
+     * produced independent snapshot evidence. Every diagnostic assertion uses the public operations
+     * surface so an operator can perform the same investigation without database access.
+     *
+     * @param flowPlanVersionId published order-to-GMV definition
+     * @param businessDate business date used by the inspection probe
+     */
+    private void inspectsOperationalEvidenceWithoutDatabaseAccess(
+            long flowPlanVersionId,
+            LocalDate businessDate) {
+        Map<String, Object> failedAction = get(
+                "/api/v1/scheduling-actions/" + FAILED_BACKFILL_ACTION_KEY);
+        Map<String, Object> failedActionSummary = mapValue(failedAction, "action");
+        assertThat(stringValue(failedActionSummary, "actionKey"))
+                .isEqualTo(FAILED_BACKFILL_ACTION_KEY);
+        assertThat(stringValue(failedActionSummary, "status")).isEqualTo("APPLIED");
+        Map<String, Object> failedBatchEvidence = mapValue(failedAction, "backfillBatch");
+        assertThat(stringValue(failedBatchEvidence, "status")).isEqualTo("FAILED");
+        assertThat(mapListValue(failedAction, "snapshotEvidence"))
+                .anySatisfy(evidence -> {
+                    assertThat(stringValue(evidence, "taskCode")).isEqualTo("dwd-order-detail");
+                    assertThat(stringValue(evidence, "schedulingState"))
+                            .isEqualTo(SchedulingStates.SNAPSHOT_NOT_ADVANCED);
+                    assertThat(evidence.get("snapshotAdvanced")).isEqualTo(Boolean.FALSE);
+                    assertThat(stringValue(evidence, "sourceHealth")).isEqualTo("HEALTHY");
+                    assertThat(stringValue(evidence, "deliveryStatus")).isEqualTo("PUBLISHED");
+                });
+
+        assertThat(getList(
+                "/api/v1/operations/snapshot-sources"
+                        + "?sourceType=PAIMON"
+                        + "&flowCode=order-to-gmv"
+                        + "&targetAssetKey=e2e.dwd.order_detail"
+                        + "&sourceHealth=HEALTHY"
+                        + "&limit=10"))
+                .singleElement()
+                .satisfies(evidence -> {
+                    assertThat(stringValue(evidence, "tableAssetKey"))
+                            .isEqualTo("e2e.dwd.order_detail");
+                    assertThat(stringValue(evidence, "sourceHealth")).isEqualTo("HEALTHY");
+                    assertThat(stringValue(evidence, "offsetStatus")).isEqualTo("IN_SYNC");
+                    assertThat(stringValue(evidence, "projectionStatus")).isEqualTo("CONSISTENT");
+                });
+
+        String deadLetterActionKey = "e2e-operations-dead-letter";
+        EXECUTION_ENDPOINT.rejectDelivery(
+                deadLetterActionKey + ":" + businessDate,
+                "ads-gmv");
+        Map<String, Object> action = post(
+                "/api/v1/scheduling-actions/backfill-node",
+                Map.of(
+                        "flowPlanVersionId", flowPlanVersionId,
+                        "startNodeCode", "ads-gmv",
+                        "startBizDate", businessDate.toString(),
+                        "endBizDate", businessDate.toString(),
+                        "cascadePolicy", "TRANSITIVE_DOWNSTREAM",
+                        "progressionMode", "SERIAL",
+                        "skipPolicy", "NONE",
+                        "actionKey", deadLetterActionKey,
+                        "requestedBy", "e2e-operator",
+                        "reason", "verify operations API dead-letter inspection"));
+        assertThat(stringValue(action, "status")).isEqualTo("APPLIED");
+
+        Map<String, Object> deadLetterBatch = get(
+                "/api/v1/backfills/by-action/" + deadLetterActionKey);
+        long deadLetterBatchId = longValue(deadLetterBatch, "id");
+        Map<String, Object> deadLetterItem = getList(
+                "/api/v1/backfills/" + deadLetterBatchId + "/items").get(0);
+        long deadLetterTaskId = longValue(deadLetterItem, "taskInstanceId");
+
+        await().atMost(Duration.ofSeconds(30))
+                .pollInterval(Duration.ofMillis(100))
+                .untilAsserted(() -> assertThat(findByLongValue(
+                        getList("/api/v1/scheduling-intent-deliveries/dead-letters?channel=HTTP&limit=20"),
+                        "taskInstanceId",
+                        deadLetterTaskId)).isPresent());
+
+        Map<String, Object> deadLetter = findByLongValue(
+                getList("/api/v1/scheduling-intent-deliveries/dead-letters?channel=HTTP&limit=20"),
+                "taskInstanceId",
+                deadLetterTaskId).orElseThrow();
+        assertThat(stringValue(deadLetter, "flowCode")).isEqualTo("order-to-gmv");
+        assertThat(stringValue(deadLetter, "taskCode")).isEqualTo("ads-gmv");
+        assertThat(stringValue(deadLetter, "channel")).isEqualTo("HTTP");
+        assertThat(longValue(deadLetter, "attemptCount")).isEqualTo(2L);
+        assertThat(stringValue(deadLetter, "lastError")).contains("status 503");
+        String exhaustedIntentKey = stringValue(deadLetter, "intentKey");
+
+        List<Map<String, Object>> blockers = getList(
+                "/api/v1/operations/blockers?flowCode=order-to-gmv&limit=100");
+        assertThat(blockers).anySatisfy(blocker -> {
+            assertThat(stringValue(blocker, "blockerType")).isEqualTo("DELIVERY_EXHAUSTED");
+            assertThat(stringValue(blocker, "subjectType"))
+                    .isEqualTo("SCHEDULING_INTENT_DELIVERY");
+            assertThat(stringValue(blocker, "subjectKey")).isEqualTo(exhaustedIntentKey);
+            assertThat(stringValue(blocker, "deliveryStatus")).isEqualTo("EXHAUSTED");
+            assertThat(stringValue(blocker, "reason")).contains("status 503");
+        });
+        assertThat(blockers).anySatisfy(blocker -> {
+            assertThat(stringValue(blocker, "blockerType")).isEqualTo("TARGET_SNAPSHOT");
+            assertThat(stringValue(blocker, "subjectType")).isEqualTo("TASK_INSTANCE");
+            assertThat(longValue(blocker, "subjectId")).isEqualTo(deadLetterTaskId);
+            assertThat(stringValue(blocker, "schedulingState"))
+                    .isEqualTo(SchedulingStates.SCHEDULED);
+        });
+
+        Map<String, Object> deadLetterAction = get(
+                "/api/v1/scheduling-actions/" + deadLetterActionKey);
+        Map<String, Object> batchEvidence = mapValue(deadLetterAction, "backfillBatch");
+        assertThat(longValue(batchEvidence, "id")).isEqualTo(deadLetterBatchId);
+        assertThat(stringValue(batchEvidence, "status")).isEqualTo("EXPANDED");
+        assertThat(mapListValue(deadLetterAction, "snapshotEvidence"))
+                .singleElement()
+                .satisfies(evidence -> {
+                    assertThat(longValue(evidence, "taskInstanceId")).isEqualTo(deadLetterTaskId);
+                    assertThat(stringValue(evidence, "backfillItemStatus")).isEqualTo("INTENT_DELIVERED");
+                    assertThat(stringValue(evidence, "schedulingState"))
+                            .isEqualTo(SchedulingStates.SCHEDULED);
+                    assertThat(stringValue(evidence, "schedulingIntentKey"))
+                            .isEqualTo(exhaustedIntentKey);
+                    assertThat(stringValue(evidence, "deliveryStatus")).isEqualTo("EXHAUSTED");
+                    assertThat(evidence.get("snapshotAdvanced")).isNull();
+                });
     }
 
     /** Verify streaming and same-instance batch parent evidence stay distinct in frozen vectors. */
@@ -866,6 +1012,32 @@ class OrderToGmvE2EIT {
         return ((Number) result).longValue();
     }
 
+    /** Read one required nested object from an API response map. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> mapValue(Map<String, Object> value, String key) {
+        Object result = value.get(key);
+        assertThat(result).as(key).isInstanceOf(Map.class);
+        return (Map<String, Object>) result;
+    }
+
+    /** Read one required nested object list from an API response map. */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> mapListValue(Map<String, Object> value, String key) {
+        Object result = value.get(key);
+        assertThat(result).as(key).isInstanceOf(List.class);
+        return (List<Map<String, Object>>) result;
+    }
+
+    /** Find one API response row by a required numeric field. */
+    private java.util.Optional<Map<String, Object>> findByLongValue(
+            List<Map<String, Object>> values,
+            String key,
+            long expected) {
+        return values.stream()
+                .filter(value -> value.get(key) instanceof Number number && number.longValue() == expected)
+                .findFirst();
+    }
+
     /** Read one required numeric identifier list from an API response map. */
     private List<Long> longList(Map<String, Object> value, String key) {
         Object result = value.get(key);
@@ -947,6 +1119,7 @@ class OrderToGmvE2EIT {
         private final Map<String, String> activeWriterJobs = new ConcurrentHashMap<>();
         private final Map<String, String> suspendedWriterCheckpoints = new ConcurrentHashMap<>();
         private final Set<SuppressedInstruction> suppressedInstructions = ConcurrentHashMap.newKeySet();
+        private final Set<RejectedInstruction> rejectedInstructions = ConcurrentHashMap.newKeySet();
         private final Set<String> successfulJobTypes = ConcurrentHashMap.newKeySet();
         private volatile ExecutionEnvironment environment;
 
@@ -1007,6 +1180,10 @@ class OrderToGmvE2EIT {
             try {
                 byte[] body = exchange.getRequestBody().readAllBytes();
                 JsonNode payload = OBJECT_MAPPER.readTree(body);
+                if (rejectsDelivery(payload)) {
+                    exchange.sendResponseHeaders(503, -1);
+                    return;
+                }
                 String intentKey = requiredText(payload, "intentKey");
                 deliveredPayloads.putIfAbsent(intentKey, payload.deepCopy());
                 submissions.computeIfAbsent(intentKey, ignored -> CompletableFuture.runAsync(
@@ -1379,6 +1556,21 @@ class OrderToGmvE2EIT {
             suppressedInstructions.add(new SuppressedInstruction(triggerEventId, taskCode));
         }
 
+        /** Configure one exact data-processing instruction to fail every HTTP delivery attempt. */
+        void rejectDelivery(String triggerEventId, String taskCode) {
+            rejectedInstructions.add(new RejectedInstruction(triggerEventId, taskCode));
+        }
+
+        /** Decide whether the transport probe should return HTTP 503 without starting a Flink job. */
+        private boolean rejectsDelivery(JsonNode payload) {
+            if ("JOB_CONTROL".equals(payload.path("intentKind").asText())) {
+                return false;
+            }
+            return rejectedInstructions.contains(new RejectedInstruction(
+                    requiredText(payload.path("schedule"), "triggerEventId"),
+                    requiredText(payload.path("definition"), "taskCode")));
+        }
+
         /** Consume one configured no-snapshot fault at the execution boundary. */
         private boolean consumeSuppression(JsonNode payload) {
             if ("JOB_CONTROL".equals(payload.path("intentKind").asText())) {
@@ -1461,6 +1653,10 @@ class OrderToGmvE2EIT {
 
         /** Test-only selector for one acknowledged instruction that publishes no snapshot. */
         private record SuppressedInstruction(String triggerEventId, String taskCode) {
+        }
+
+        /** Test-only selector for one instruction whose HTTP transport must exhaust retries. */
+        private record RejectedInstruction(String triggerEventId, String taskCode) {
         }
     }
 }

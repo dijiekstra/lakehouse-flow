@@ -43,6 +43,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>io.github.lakehouseflow</groupId>
+            <artifactId>lakehouse-flow-boot</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
@@ -111,6 +117,7 @@
                     </includes>
                     <systemPropertyVariables>
                         <lakehouse.flow.e2e.job-jar>${maven.multiModuleProjectDirectory}/lakehouse-flow-e2e-jobs/target/lakehouse-flow-e2e-jobs-${project.version}-job.jar</lakehouse.flow.e2e.job-jar>
+                        <lakehouse.flow.e2e.boot-jar>${maven.multiModuleProjectDirectory}/lakehouse-flow-boot/target/lakehouse-flow-boot-${project.version}.jar</lakehouse.flow.e2e.boot-jar>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

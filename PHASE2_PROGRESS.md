@@ -68,12 +68,12 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 |------|------|----------|----------|
 | R1 | 真实 Flink/Paimon 闭环 | 真实业务库变更经 Flink CDC 持续流式写入 Paimon ODS；DWD/DWS/ADS 按 Flow 配置选择流式或批式，验证 writer adapter 写入全部归因属性，Paimon source 读回并完成输入边界、分区证据、DAG 与补数推进 | 已完成：CDC ODS、三个批式加工节点、两轮普通 DAG、流式回放和完整/Node 子图补数均通过真实 Paimon E2E |
 | R2 | Action 真实闭环 | 普通调度、重跑、完整 Flow 补数、Node 子图补数和失败恢复均在真实 Paimon 上遵守同一 DAG/snapshot 不变量 | 已完成：workflow/task/node 重跑、完整 Flow 补数、Node 子图补数及 `FULL_SCOPE` 失败恢复均通过真实 Paimon E2E |
-| R3 | PostgreSQL 高可用与恢复 | 多 scheduler 并发、行锁、进程中断、claim 过期重占、新旧 fencing、事务回滚和 source offset 恢复经整体 E2E 通过 | 已完成：双 scheduler 上下文已覆盖故障切点 1-6；writer epoch 行锁、Flink checkpoint offset 恢复和旧 holder/epoch fencing 同时通过 |
+| R3 | PostgreSQL 高可用与恢复 | 多 scheduler 并发、行锁、进程中断、claim 过期重占、新旧 fencing、事务回滚和 source offset 恢复经整体 E2E 通过 | 已完成：独立 Boot JVM 强制终止及双 scheduler 上下文已覆盖故障切点 1-6；writer epoch 行锁、Flink checkpoint offset 恢复和旧 holder/epoch fencing 同时通过 |
 | R4 | 正式投递 | 数据处理与作业控制意图都支持 `DATABASE_TABLE + HTTP`；数据库无丢 intent，HTTP 至少一次投递、重试、超时、死信和 `intentKey` 幂等在真实 PostgreSQL/网络上验证 | 已完成：两类 intent 的数据库原子发布、HTTP 正常/超时/重试耗尽/死信和重复投递幂等均通过 E2E |
 | R5 | 稳定结果语义 | 确认、未推进、投递耗尽和 source 阻塞可独立查询；source 缺口不得产生 `SNAPSHOT_NOT_ADVANCED` | 已完成：四类语义在同一 PostgreSQL/HTTP E2E 中保持正交，source 缺口保持 snapshot `WAITING` |
 | R6 | 稳定契约 | 冻结 1.0 REST API、`SchedulingIntent` 1.3、`JobControlIntent` 1.0、Flyway 只前进迁移策略和下游 `intentKey` 幂等要求，并有兼容性回归 | 已完成：机器可读契约、checksum 回归及真实 V22 到 V23 升级均通过 |
-| R7 | 生产运维闭环 | 阻塞原因、delivery 死信、snapshot 证据、补数批次、source 对账和关键告警可通过 API/指标查询，无需登录数据库 | 已完成：只读运维 API、分组指标、Prometheus 规则和处置手册已交付 |
-| R8 | 工程质量 | JDK 17；service line >= 90%、branch >= 65%；每个显式 public service 方法有直接单测入口；发布前整体 E2E 通过 | 已完成：JDK 17 下 396 个单元/启动测试和 8 个整体 E2E 全部通过，Service line 91.37%、branch 68.98% |
+| R7 | 生产运维闭环 | 阻塞原因、delivery 死信、snapshot 证据、补数批次、source 对账和关键告警可通过 API/指标查询，无需登录数据库 | 已完成：只读运维 API、分组指标、Prometheus 规则和处置手册已交付；统一 API 巡检已通过整体 E2E |
+| R8 | 工程质量 | JDK 17；service line >= 90%、branch >= 65%；每个显式 public service 方法有直接单测入口；发布前整体 E2E 通过 | 已完成：JDK 17 下 396 个单元/启动测试和 11 个整体 E2E 全部通过，Service line 91.37%、branch 68.98% |
 | R9 | 作业生命周期与单表单写入者 | 平台可对 `WriterJobBinding` 发起独立 `JobControlIntent(START_JOB|RESTART_JOB)`，执行侧以 writer epoch fencing；控制意图不创建 task/workflow；发布两个不同 `writerJobKey` 指向同一物理表必须失败，混合流批 DAG 中不同表可独立推进 | 已完成：模型/约束/单测及真实 START、checkpoint RESTART、旧 epoch 提交拒绝、四表独立推进均已通过 |
 
 ### 整体 E2E 故障矩阵
@@ -90,7 +90,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 8. 两个 Flow/节点尝试绑定同一物理表，验证不同 `writerJobKey` 在发布期被拒绝；平台重启同一 writer 时只产生 `JobControlIntent` 而不产生 task/workflow，旧 epoch 的迟到 snapshot 不能确认新控制或数据处理 intent。
 9. 常驻流 writer 的目标表执行补数，验证回放由当前流 epoch 消费，或平台完成流 epoch -> 批 epoch -> 新流 epoch 的受控切换，整个过程不存在第二个并发 writer。
 
-故障切点 1-6 已由 `SchedulerRecoveryE2EIT` 完成：两个独立 Spring scheduler 上下文连接同一真实 PostgreSQL，在事务和 delivery 持久化边界注入可重复的进程中断等价故障；验证回滚后重放、租约过期重占、旧 token 拒绝、HTTP 送达后 ACK 丢失的幂等重投、snapshot 确认重扫，以及 Flow/目标/source 三类行锁竞争。第 7-9 项由订单链路 E2E 完成，覆盖混合输入向量、单表 writer、旧 epoch fencing，以及常驻流 writer 暂停、当前 epoch 有界回放和受控新 epoch 恢复。
+故障切点 1-6 已由 `SchedulerRecoveryE2EIT` 完成：独立 Boot JAR 进程和两个 Spring scheduler 上下文连接同一真实 PostgreSQL，在 HTTP ACK 前强制终止 JVM，并在事务和 delivery 持久化边界注入可重复故障；验证回滚后重放、租约过期重占、旧 token 拒绝、HTTP 送达后 ACK 丢失的幂等重投、snapshot 确认重扫，以及 Flow/目标/source 三类行锁竞争。第 7-9 项由订单链路 E2E 完成，覆盖混合输入向量、单表 writer、旧 epoch fencing，以及常驻流 writer 暂停、当前 epoch 有界回放和受控新 epoch 恢复。
 
 ### 已完成实施顺序
 
@@ -100,7 +100,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 4. `LF1-04` Flink/Paimon writer-side adapter（已完成）：独立 `lakehouse-flow-flink-paimon` 模块统一流式 checkpoint/批式结束提交、完整属性校验和 `WriterEpochFence` SPI；JDBC 实现以 PostgreSQL binding 行锁覆盖整个 Paimon commit，真实旧 epoch 提交已失败关闭。
 5. `LF1-05` 真实业务闭环 E2E（R1/R2 已完成）：已贯穿业务库变更、Flink CDC 流式 ODS、平台 START/RESTART、外部 checkpoint offset 恢复、HTTP intent、DWD/DWS/ADS 批式 DAG、Paimon source、归因、两轮普通推进、三类重跑、两类补数和失败恢复。
 6. `LF1-06` 高可用与恢复 E2E（R3 已完成）：真实 PostgreSQL 上的双 scheduler 锁竞争、事务中断、claim/确认恢复、旧 token fencing、至少一次 HTTP 幂等重投和 source offset 单调恢复均已通过。
-7. `LF1-07` 最小运维 API（已完成代码与单测）：增加统一 blockers、持久化 source 对账和 job-control delivery dead-letter 查询；V23 为 task 持久化结构化 source 证据，查询不依赖 `waitingReason` 文本，也不读取下游运行状态。
+7. `LF1-07` 最小运维 API（已完成代码、单测与整体 E2E）：增加统一 blockers、持久化 source 对账和 job-control delivery dead-letter 查询；V23 为 task 持久化结构化 source 证据，查询不依赖 `waitingReason` 文本，也不读取下游运行状态。整体巡检已从健康 source、失败补数、snapshot 证据定位 `SNAPSHOT_NOT_ADVANCED`，并从 HTTP 503 死信定位 `DELIVERY_EXHAUSTED` 与仍待目标 snapshot 的任务。
 8. `LF1-08` 契约冻结（已完成）：已固定 `/api/v1` surface、两类 intent JSON Schema、未知字段策略、V1-V23 migration checksum 和下游幂等要求，并通过正式投递与 V22 到 V23 升级 E2E。
 
 ### LF-1.0 四态收口清单
@@ -109,7 +109,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 
 | 分类 | 编号 | 收口项 | 当前基础 | 退出标准 |
 |------|------|----------|----------|----------|
-| 开发态 | DEV-1 | 最小运维只读聚合能力（已完成） | 已增加统一 blockers、持久化 source 对账和两类 delivery 死信 API；task source 结论已由 V23 结构化持久化 | 已达到：支持按 blocker、Flow、目标资产、source 和 source 结果过滤，只展示调度、传输和 snapshot/source 证据，不引入下游运行状态 |
+| 开发态 | DEV-1 | 最小运维只读聚合能力（已完成） | 已增加统一 blockers、持久化 source 对账和两类 delivery 死信 API；task source 结论已由 V23 结构化持久化 | 已达到：支持按 blocker、Flow、目标资产、source 和 source 结果过滤，只展示调度、传输和 snapshot/source 证据，不引入下游运行状态；统一巡检已通过整体 E2E |
 | 运维态 | OPS-1 | 生产接入与故障处置手册（已完成） | `OPERATIONS_RUNBOOK.md` 已覆盖 `DATABASE_TABLE + HTTP`、Paimon source/writer adapter、START/RESTART、死信、`SOURCE_BLOCKED`、补数控制和 writer fencing | 已达到：配置检查、投产验收、日常巡检、结果语义和禁止操作均有可执行步骤，且不读取下游运行状态 |
 | 运维态 | OPS-2 | PostgreSQL migration 与数据保留操作策略（已完成） | `DATABASE_OPERATIONS.md` 已固定 V1-V23 基线、V23 后 expand/contract 约束、备份恢复、单实例升级和 aggregate 保留边界 | 已达到：migration 只前进，生产关闭 baseline/clean，明确失败恢复和滚动兼容；容量基线前默认不自动删除，禁止破坏 source/intent/audit 证据链 |
 | 观测态 | OBS-1 | Source 与阻塞原因可查询（已完成） | `/api/v1/operations/snapshot-sources` 与 `/blockers` 已支持 source、Flow、目标资产、结果和 blocker 分类过滤 | 已达到：可查看最新 `HEALTHY/REPAIRABLE/SOURCE_BLOCKED` 证据及阻塞对象，无需登录数据库 |
@@ -131,7 +131,7 @@ Lakehouse Flow 是基于 snapshot 推进模式的新一代调度系统。
 
 发布候选使用 `.github/workflows/lf1-release-candidate.yml`，只允许 `1.0.0-SNAPSHOT`、`1.0.0-rcN` 或 `1.0.0` 版本线，且 RC tag 必须与 Maven 版本完全一致。该 workflow 不带 `-DskipITs`，并校验可执行 Boot JAR、三份冻结契约、发布文档和 SHA-256 校验和。最终版本号和 `v1.0.0` 标签只能在 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 的候选验收与受信环境演练完成后创建。
 
-DEV/OPS/OBS/STB 最近验证：本地 JDK 17.0.12 与 GitHub Actions Linux/JDK 17 下 `./mvnw clean verify` 全部通过，共 396 个单元/启动测试和 8 个整体 Testcontainers E2E，failure/error/skip 均为 0。兼容性回归覆盖 35 个 `/api/v1` 路由、14 类 request 未知字段策略、两类 intent JSON Schema、V1-V23 migration checksum 和真实 V22 到 V23 升级。Service JaCoCo line 91.37%、branch 68.98%、method 91.42%。候选 Boot JAR、冻结契约、发布文档和 `SHA256SUMS` 已通过远程门禁与下载复核。Prometheus 规则已通过 YAML 结构校验，但本机未安装 `promtool`，部署前仍需执行 PromQL 规则校验。LF-1.0 功能与稳定性门槛已经正式验收。
+DEV/OPS/OBS/STB 最近验证：本地 JDK 17.0.12 下 `./mvnw clean verify` 全部通过，共 396 个单元/启动测试和 11 个整体 Testcontainers E2E，failure/error/skip 均为 0。兼容性回归覆盖 35 个 `/api/v1` 路由、14 类 request 未知字段策略、两类 intent JSON Schema、V1-V23 migration checksum、真实 V22 到 V23 升级和统一运维 API 巡检。Service JaCoCo line 91.37%、branch 68.98%、method 91.42%。GitHub Actions 已配置相同的发布候选门禁，每个候选提交仍以对应的远程 run 为最终证据。Prometheus 规则已通过 YAML 结构校验，但本机未安装 `promtool`，部署前仍需执行 PromQL 规则校验。LF-1.0 功能与稳定性门槛已经在本地正式验收。
 
 ### 容量基线决策
 
@@ -176,7 +176,7 @@ DEV/OPS/OBS/STB 最近验证：本地 JDK 17.0.12 与 GitHub Actions Linux/JDK 1
 | G5 | 补数缺少批次、并发和级联策略 | 已完成 | LF-0.4 | 完整 Flow 与 Node 子图补数均已纳入统一批次模型，支持不可变节点范围、日期准入、级联、安全整日跳过、控制和失败替代恢复；审批上限按当前决策暂缓且不阻塞专题退出。 |
 | G6 | Target snapshot baseline 与节点绑定不足 | 基础完成 | LF-0.2 / LF-0.4 | intent 携带目标资产、定义锚点、baseline 和必须写入逻辑完成 snapshot 的归因属性；确认按历史事件而非任意 latest 推进，后续只由匹配 snapshot 驱动 DAG。 |
 | G7 | 补偿扫描还不够生产化 | 基础完成 | LF-0.5 / LF-1.0 | delivery/source 指标、死信 API、双轨对账、连续补扫、投影重放及 source-aware 超时门禁已实现；真实 PostgreSQL 中断、确认重扫和 source offset 恢复已通过整体 E2E。 |
-| G8 | 查询视图和审计视图不足 | 已完成 1.0 目标 | LF-0.5 / LF-1.0 | action、补数、snapshot 证据、阻塞原因、source 对账和两类 delivery 死信均可通过 API 查询。Flow 聚合、稳定游标、通用 Web UI 后移。 |
+| G8 | 查询视图和审计视图不足 | 已完成 1.0 目标 | LF-0.5 / LF-1.0 | action、补数、snapshot 证据、阻塞原因、source 对账和两类 delivery 死信均可通过 API 查询，并已通过无需数据库访问的统一 E2E 巡检。Flow 聚合、稳定游标、通用 Web UI 后移。 |
 | G9 | Flow 级隔离和并发策略未固化 | 部分建模 | LF-1.1+ | `FlowPlan.owner/flowSpaceCode` 已记录归属。`LF-1.0` 是单团队受信环境，不强制可信身份和 RBAC；后续仍按 Flow 增加轻量授权与配额，不引入重型租户层。 |
 | G10 | 真实湖格式 snapshot 归因元数据采集不完整 | 已完成 Paimon 目标 | LF-1.0 | 通用 source SPI、Paimon properties/delta-manifest/offset、分区路径规范化及可复用 writer adapter 已完成；流式 checkpoint、批式提交、Node 子图补数和真实 epoch fencing 已验证。Iceberg/Hudi 后移至 1.1+。 |
 | G11 | Action snapshot 与正常自然触发未隔离 | 已完成 | LF-0.4 / LF-0.5 | 已按持久化 `intentKey -> triggerType` 分类；补数、恢复、重跑只推进所属实例，非法/中间/维护 snapshot 失败关闭；action 查询也不再把未归属的 latest 推进显示为成功。日期隔离要求 FlowPlan 使用 `${bizDate}` 分区资产。 |
@@ -380,7 +380,7 @@ G14 退出标准：决策次数/耗时、异常失败关闭、非终态积压、
 9. 资产推进会重新评估同业务日期的等待节点；输入不完整时不会占用 `targetAssetKey + bizDate` 准入槽位、采集 baseline 或写入 outbox。
 10. 新增 Mockito 单测覆盖 source 证据缺失/过期/追平、source 阻塞保持待定、混合父边汇聚、流式回放父节点、批父节点实例隔离、action 入口和 intent 输入向量。
 
-代码与单测退出标准已达到；真实 Flink/Paimon writer、PostgreSQL 多节点竞争和 DB/HTTP 整体 E2E 继续由 G10/G17 验收，不在这里提前宣称完成。
+代码与单测退出标准已达到；真实 Flink/Paimon writer、PostgreSQL 多节点竞争和 DB/HTTP 已由 G10/G17 的整体 E2E 完成验收。
 
 ### G20 / LF-1.0: 平台作业控制与单表单 Writer
 
@@ -420,7 +420,7 @@ G20 代码、单测和系统级退出标准已经达到。多 scheduler 竞争�
 7. 验证两个 scheduler 竞争同一 Flow `maxActiveInstances` 和同一 `targetAssetKey + bizDate` 时只有一个首发；过期 holder 可重占，旧 holder 不能释放新租约。
 8. 验证 snapshot event 已落库、task 确认前中断后，两个 scanner 竞争重扫只产生一份状态转换和证据；delivery 是否 ACK 不影响 snapshot 结果。
 
-G17 作为整个 LF-1.0 E2E 总项已经完成：R1/R2 的真实链路与 action、R3 的恢复、R4 的 `DATABASE_TABLE` 与 HTTP 超时/死信、R5 的结果正交语义及 V23 升级均已纳入同一次整体构建验收。
+G17 作为整个 LF-1.0 E2E 总项已经完成：R1/R2 的真实链路与 action、R3 的恢复、R4 的 `DATABASE_TABLE` 与 HTTP 超时/死信、R5 的结果正交语义、R7 的统一运维 API 巡检及 V23 升级均已纳入同一次整体构建验收。
 
 ### G4 / G5 / LF-0.4: Action 与补数控制能力增强
 
@@ -531,7 +531,7 @@ G17 作为整个 LF-1.0 E2E 总项已经完成：R1/R2 的真实链路与 action
 
 当前测试策略：service/API/integration 逻辑先使用 Mockito 单元测试隔离依赖；service 层每个 public 方法必须有直接测试入口。`LF-1.0` 必须再由 `lakehouse-flow-e2e` 的整体 Testcontainers E2E 贯穿 API/事件入口、PostgreSQL/Flyway、事务与约束、DB/HTTP 投递、Flink/Paimon 写读、snapshot 确认、DAG 和补数推进。E2E 验证的是 Lakehouse Flow 整体闭环，不归属于某个单独生产模块，也不用来替代当前单元测试。
 
-2026-09-14 验证快照：JDK 17.0.12 下 `./mvnw clean verify` 全部通过，共 396 个单元/启动测试和 8 个整体 Testcontainers E2E，failure/error/skip 均为 0；Service JaCoCo line 91.37%、branch 68.98%、method 91.42%，构建门槛实际通过。所有显式 public service 方法保留直接 Mockito 测试入口。真实环境覆盖 V1-V23 migration 及 V22 到 V23 升级、DB/HTTP、MySQL CDC、Flink/Paimon writer/source、普通流批 DAG、全部发布关键 action、常驻流 writer 补数切换、四类正交结果，以及双 scheduler 锁竞争、中断、claim/确认重占、source offset 恢复和事务回滚。
+2026-09-14 验证快照：JDK 17.0.12 下 `./mvnw clean verify` 全部通过，共 396 个单元/启动测试和 11 个整体 Testcontainers E2E，failure/error/skip 均为 0；Service JaCoCo line 91.37%、branch 68.98%、method 91.42%，构建门槛实际通过。所有显式 public service 方法保留直接 Mockito 测试入口。真实环境覆盖 V1-V23 migration 及 V22 到 V23 升级、DB/HTTP、MySQL CDC、Flink/Paimon writer/source、普通流批 DAG、全部发布关键 action、常驻流 writer 补数切换、四类正交结果、统一运维 API 巡检，以及独立 JVM 强制终止、双 scheduler 锁竞争、claim/确认重占、source offset 恢复和事务回滚。
 
 每次推进后至少执行：
 

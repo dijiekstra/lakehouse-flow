@@ -2,7 +2,12 @@ package io.github.lakehouseflow.e2e.job;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.github.lakehouseflow.common.BackfillBatchStatuses;
+import io.github.lakehouseflow.common.BackfillItemStatuses;
+import io.github.lakehouseflow.common.BackfillProgressionModes;
+import io.github.lakehouseflow.common.BackfillSkipPolicies;
 import io.github.lakehouseflow.common.ScheduleNodeProcessingModes;
+import io.github.lakehouseflow.common.SchedulingActionStatuses;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryChannels;
 import io.github.lakehouseflow.common.SchedulingIntentDeliveryStatuses;
 import io.github.lakehouseflow.common.SchedulingIntentContract;
@@ -10,6 +15,8 @@ import io.github.lakehouseflow.common.SchedulingStates;
 import io.github.lakehouseflow.common.SnapshotEvidenceContract;
 import io.github.lakehouseflow.common.SnapshotSourceHealthOutcomes;
 import io.github.lakehouseflow.dao.AssetStateRepository;
+import io.github.lakehouseflow.dao.BackfillBatchRepository;
+import io.github.lakehouseflow.dao.BackfillItemRepository;
 import io.github.lakehouseflow.dao.EventConsumerOffsetRepository;
 import io.github.lakehouseflow.dao.JobControlIntentDeliveryRepository;
 import io.github.lakehouseflow.dao.JobControlIntentRepository;
@@ -21,12 +28,15 @@ import io.github.lakehouseflow.dao.SnapshotSourceHealthRepository;
 import io.github.lakehouseflow.dao.TaskInstanceRepository;
 import io.github.lakehouseflow.dao.WorkflowInstanceRepository;
 import io.github.lakehouseflow.integration.event.SnapshotIngestionTransactionService;
+import io.github.lakehouseflow.model.BackfillBatch;
+import io.github.lakehouseflow.model.BackfillItem;
 import io.github.lakehouseflow.model.FlowPlan;
 import io.github.lakehouseflow.model.FlowPlanVersion;
 import io.github.lakehouseflow.model.JobControlIntent;
 import io.github.lakehouseflow.model.JobControlIntentDelivery;
 import io.github.lakehouseflow.model.LakehouseEvent;
 import io.github.lakehouseflow.model.ScheduleNode;
+import io.github.lakehouseflow.model.SchedulingActionResult;
 import io.github.lakehouseflow.model.SchedulingIntent;
 import io.github.lakehouseflow.model.SchedulingIntentDelivery;
 import io.github.lakehouseflow.model.SnapshotConfirmationResult;
@@ -39,6 +49,7 @@ import io.github.lakehouseflow.scheduler.delivery.HttpSchedulingIntentPublisher;
 import io.github.lakehouseflow.service.FlowPlanService;
 import io.github.lakehouseflow.service.JobControlIntentDeliveryQueryService;
 import io.github.lakehouseflow.service.JobControlIntentService;
+import io.github.lakehouseflow.service.SchedulingActionService;
 import io.github.lakehouseflow.service.SchedulingIntentDeliveryService;
 import io.github.lakehouseflow.service.SchedulingIntentDeliveryQueryService;
 import io.github.lakehouseflow.service.SchedulingIntentService;
@@ -70,6 +81,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -85,7 +98,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -141,6 +156,9 @@ class SchedulerRecoveryE2EIT {
     private SchedulingIntentService schedulingIntentService;
 
     @Autowired
+    private SchedulingActionService schedulingActionService;
+
+    @Autowired
     private SnapshotConfirmationService snapshotConfirmationService;
 
     @Autowired
@@ -160,6 +178,12 @@ class SchedulerRecoveryE2EIT {
 
     @Autowired
     private SchedulingIntentRepository schedulingIntentRepository;
+
+    @Autowired
+    private BackfillBatchRepository backfillBatchRepository;
+
+    @Autowired
+    private BackfillItemRepository backfillItemRepository;
 
     @Autowired
     private SchedulingIntentDeliveryRepository deliveryRepository;
@@ -298,6 +322,63 @@ class SchedulerRecoveryE2EIT {
             assertThat(recoveredAfterHttp.getStatus())
                     .isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
             assertThat(recoveredAfterHttp.getAttemptCount()).isEqualTo(2);
+        }
+    }
+
+    /**
+     * Verify a separate scheduler JVM can be killed before ACK persistence and safely recovered.
+     *
+     * <p>The child runs the packaged Spring Boot application and blocks inside a real HTTP call.
+     * The test forcefully terminates that operating-system process, waits for its PostgreSQL claim
+     * lease to expire, and lets the primary scheduler redeliver with the same idempotency key.
+     *
+     * @throws Exception when the child JVM, endpoint, or lease recovery cannot be completed
+     */
+    @Test
+    void reclaimsDeliveryAfterIndependentSchedulerJvmIsKilled() throws Exception {
+        try (BlockingIdempotentHttpEndpoint endpoint = BlockingIdempotentHttpEndpoint.start()) {
+            SchedulingIntentDelivery delivery = createPendingHttpDelivery(
+                    "independent-process",
+                    endpoint.url());
+            try (ChildSchedulerProcess child = startIndependentSchedulerProcess()) {
+                assertThat(endpoint.awaitFirstRequest(Duration.ofSeconds(30)))
+                        .withFailMessage("Child scheduler did not publish before exit:%n%s", child.output())
+                        .isTrue();
+                assertThat(child.process().isAlive()).isTrue();
+                SchedulingIntentDelivery abandoned = deliveryRepository.findById(delivery.getId()).orElseThrow();
+                assertThat(abandoned.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHING);
+                assertThat(abandoned.getClaimOwner()).isEqualTo("independent-jvm");
+
+                child.forceStop();
+                endpoint.releaseFirstResponse();
+
+                AtomicReference<SchedulingIntentPublication> recovered = new AtomicReference<>();
+                await().atMost(Duration.ofSeconds(10))
+                        .pollInterval(Duration.ofMillis(100))
+                        .until(() -> {
+                            List<SchedulingIntentPublication> claims = deliveryService.claimDueDeliveries(
+                                    "surviving-scheduler",
+                                    1,
+                                    Duration.ofSeconds(30));
+                            if (claims.isEmpty()) {
+                                return false;
+                            }
+                            recovered.set(claims.get(0));
+                            return true;
+                        });
+
+                SchedulingIntentPublication publication = recovered.get();
+                assertThat(publication.claimToken()).isNotEqualTo(abandoned.getClaimToken());
+                httpPublisher.publish(publication);
+                assertThat(deliveryService.recordPublished(
+                        publication.deliveryId(), publication.claimToken())).isTrue();
+            }
+
+            assertThat(endpoint.requestCount()).isEqualTo(2);
+            assertThat(endpoint.uniqueIntentCount()).isEqualTo(1);
+            SchedulingIntentDelivery published = deliveryRepository.findById(delivery.getId()).orElseThrow();
+            assertThat(published.getStatus()).isEqualTo(SchedulingIntentDeliveryStatuses.PUBLISHED);
+            assertThat(published.getAttemptCount()).isEqualTo(2);
         }
     }
 
@@ -477,6 +558,150 @@ class SchedulerRecoveryE2EIT {
                 .isEqualTo(SchedulingIntentDeliveryStatuses.PENDING);
         assertThat(targetAdmissionRepository.findAll()).allSatisfy(admission ->
                 assertThat(admission.getStatus()).isEqualTo("AVAILABLE"));
+    }
+
+    /**
+     * Verify maintenance and foreign snapshots cannot hide a later attributable data snapshot.
+     *
+     * <p>The three events deliberately advance the same target in sequence. Confirmation must
+     * ignore an exactly attributed compaction and a data snapshot written by another intent,
+     * while retaining enough source history to find the final Lakehouse Flow snapshot.
+     */
+    @Test
+    void ignoresMaintenanceAndForeignSnapshotsUntilAttributedTargetAdvances() {
+        FlowFixture flow = createPublishedBatchFlow(
+                "ha-attribution-flow",
+                "ha-attribution-writer",
+                "ha.attribution.orders",
+                2);
+        ReadyTask readyTask = createReadyTask(flow, LocalDate.of(2026, 9, 18), "attribution");
+        SchedulingIntentService.TaskSchedulingIntent publication =
+                schedulingIntentService.publishTaskIntent(readyTask.task().getId());
+        SchedulingIntent intent = schedulingIntentRepository.findById(publication.intentId()).orElseThrow();
+
+        lakehouseEventRepository.save(snapshotEvent(
+                intent,
+                "maintenance",
+                "1",
+                "COMPACT",
+                false,
+                attributionProperties(intent)));
+        SnapshotConfirmationResult afterMaintenance = snapshotConfirmationService
+                .checkTaskSnapshotProgress(readyTask.task().getId(), Duration.ofMinutes(5));
+        assertThat(afterMaintenance.snapshotAdvanced()).isFalse();
+        assertThat(afterMaintenance.observedSnapshotId()).isEqualTo("1");
+        assertThat(taskInstanceRepository.findById(readyTask.task().getId()).orElseThrow().getState())
+                .isEqualTo(SchedulingStates.SCHEDULED);
+
+        Map<String, Object> foreignProperties = new LinkedHashMap<>(attributionProperties(intent));
+        foreignProperties.put(SnapshotEvidenceContract.INTENT_KEY_PROPERTY, "external:orders-import");
+        lakehouseEventRepository.save(snapshotEvent(
+                intent,
+                "foreign",
+                "2",
+                "APPEND",
+                true,
+                foreignProperties));
+        SnapshotConfirmationResult afterForeignWrite = snapshotConfirmationService
+                .checkTaskSnapshotProgress(readyTask.task().getId(), Duration.ofMinutes(5));
+        assertThat(afterForeignWrite.snapshotAdvanced()).isFalse();
+        assertThat(afterForeignWrite.observedSnapshotId()).isEqualTo("2");
+        assertThat(taskInstanceRepository.findById(readyTask.task().getId()).orElseThrow().getState())
+                .isEqualTo(SchedulingStates.SCHEDULED);
+
+        lakehouseEventRepository.save(snapshotEvent(
+                intent,
+                "attributed",
+                "3",
+                "APPEND",
+                true,
+                attributionProperties(intent)));
+        SnapshotConfirmationResult confirmed = snapshotConfirmationService
+                .checkTaskSnapshotProgress(readyTask.task().getId(), Duration.ofMinutes(5));
+        assertThat(confirmed.snapshotAdvanced()).isTrue();
+        assertThat(confirmed.observedSnapshotId()).isEqualTo("3");
+        assertThat(taskInstanceRepository.findById(readyTask.task().getId()).orElseThrow().getState())
+                .isEqualTo(SchedulingStates.SNAPSHOT_CONFIRMED);
+        assertThat(lakehouseEventRepository.findAll()).hasSize(3);
+    }
+
+    /**
+     * Verify serial backfill admits the next date only after the current date snapshot confirms.
+     *
+     * <p>This exercises the persisted batch, task, writer and target-admission records against
+     * PostgreSQL. No execution status participates in releasing the second business date.
+     */
+    @Test
+    void advancesSerialBackfillDatesOnlyAfterCurrentDateSnapshotsConfirm() {
+        FlowFixture flow = createPublishedBatchFlow(
+                "ha-serial-backfill-flow",
+                "ha-serial-backfill-writer",
+                "ha.backfill.orders",
+                2);
+        LocalDate firstDate = LocalDate.of(2026, 9, 19);
+        LocalDate secondDate = firstDate.plusDays(1);
+        String actionKey = "ha-serial-two-date-backfill";
+
+        SchedulingActionResult action = schedulingActionService.backfillWorkflow(
+                flow.version().getFlowCode(),
+                flow.version().getVersion(),
+                firstDate,
+                secondDate,
+                BackfillProgressionModes.SERIAL,
+                null,
+                BackfillSkipPolicies.NONE,
+                actionKey,
+                "e2e",
+                "verify serial date snapshot progression");
+        assertThat(action.status()).isEqualTo(SchedulingActionStatuses.APPLIED);
+
+        BackfillBatch batch = backfillBatchRepository.findByActionKey(actionKey).orElseThrow();
+        List<BackfillItem> initialItems = backfillItemRepository
+                .findByBackfillBatchIdOrderByBizDateAscCreatedAtAsc(batch.getId());
+        assertThat(initialItems).hasSize(2);
+        assertThat(initialItems.get(0).getBizDate()).isEqualTo(firstDate);
+        assertThat(initialItems.get(0).getStatus()).isEqualTo(BackfillItemStatuses.INTENT_READY);
+        assertThat(initialItems.get(1).getBizDate()).isEqualTo(secondDate);
+        assertThat(initialItems.get(1).getStatus()).isEqualTo(BackfillItemStatuses.WAITING_CONCURRENCY);
+
+        SchedulingIntentService.TaskSchedulingIntent firstPublication =
+                schedulingIntentService.publishTaskIntent(initialItems.get(0).getTaskInstanceId());
+        assertThat(schedulingIntentRepository.findAll()).singleElement().satisfies(intent ->
+                assertThat(intent.getBizDate().toLocalDate()).isEqualTo(firstDate));
+        assertThat(taskInstanceRepository.findById(initialItems.get(1).getTaskInstanceId()).orElseThrow().getState())
+                .isEqualTo(SchedulingStates.WAITING_SNAPSHOT);
+
+        SchedulingIntent firstIntent = schedulingIntentRepository
+                .findById(firstPublication.intentId()).orElseThrow();
+        lakehouseEventRepository.save(attributedEvent(firstIntent, "1"));
+        assertThat(snapshotConfirmationService.checkTaskSnapshotProgress(
+                initialItems.get(0).getTaskInstanceId(), Duration.ofMinutes(5)).snapshotAdvanced()).isTrue();
+
+        List<BackfillItem> afterFirstDate = backfillItemRepository
+                .findByBackfillBatchIdOrderByBizDateAscCreatedAtAsc(batch.getId());
+        assertThat(afterFirstDate.get(0).getStatus()).isEqualTo(BackfillItemStatuses.SNAPSHOT_CONFIRMED);
+        assertThat(afterFirstDate.get(1).getStatus()).isEqualTo(BackfillItemStatuses.INTENT_READY);
+        assertThat(taskInstanceRepository.findById(afterFirstDate.get(1).getTaskInstanceId()).orElseThrow().getState())
+                .isEqualTo(SchedulingStates.READY_TO_SCHEDULE);
+
+        SchedulingIntentService.TaskSchedulingIntent secondPublication =
+                schedulingIntentService.publishTaskIntent(afterFirstDate.get(1).getTaskInstanceId());
+        SchedulingIntent secondIntent = schedulingIntentRepository
+                .findById(secondPublication.intentId()).orElseThrow();
+        assertThat(secondIntent.getBizDate().toLocalDate()).isEqualTo(secondDate);
+        assertThat(secondIntent.getIntentKey()).isNotEqualTo(firstIntent.getIntentKey());
+        lakehouseEventRepository.save(attributedEvent(secondIntent, "2"));
+        assertThat(snapshotConfirmationService.checkTaskSnapshotProgress(
+                afterFirstDate.get(1).getTaskInstanceId(), Duration.ofMinutes(5)).snapshotAdvanced()).isTrue();
+
+        assertThat(backfillBatchRepository.findById(batch.getId()).orElseThrow().getStatus())
+                .isEqualTo(BackfillBatchStatuses.COMPLETED);
+        assertThat(backfillItemRepository.findByBackfillBatchIdOrderByBizDateAscCreatedAtAsc(batch.getId()))
+                .allSatisfy(item -> assertThat(item.getStatus())
+                        .isEqualTo(BackfillItemStatuses.SNAPSHOT_CONFIRMED));
+        assertThat(schedulingIntentRepository.findAll())
+                .extracting(intent -> intent.getBizDate().toLocalDate())
+                .containsExactly(firstDate, secondDate);
     }
 
     /** Verify database-table delivery makes both immutable intent kinds atomically visible. */
@@ -909,7 +1134,17 @@ class SchedulerRecoveryE2EIT {
 
     /** Build one final data snapshot carrying every property frozen in an intent. */
     private LakehouseEvent attributedEvent(SchedulingIntent intent, String snapshotId) {
-        String[] target = intent.getTargetAssetKey().split("\\.", 4);
+        return snapshotEvent(
+                intent,
+                "attributed",
+                snapshotId,
+                "APPEND",
+                true,
+                attributionProperties(intent));
+    }
+
+    /** Build the immutable property set required to attribute a target snapshot. */
+    private Map<String, Object> attributionProperties(SchedulingIntent intent) {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put(SnapshotEvidenceContract.SOURCE_PROPERTY, SnapshotEvidenceContract.INTENT_SOURCE);
         properties.put(SnapshotEvidenceContract.INTENT_KEY_PROPERTY, intent.getIntentKey());
@@ -918,8 +1153,20 @@ class SchedulerRecoveryE2EIT {
         properties.put(SnapshotEvidenceContract.TARGET_ASSET_PROPERTY, intent.getTargetAssetKey());
         properties.put(SnapshotEvidenceContract.BIZ_DATE_PROPERTY, intent.getBizDate().toLocalDate().toString());
         properties.put(SnapshotEvidenceContract.FINAL_PROPERTY, SnapshotEvidenceContract.FINAL_VALUE);
+        return Map.copyOf(properties);
+    }
+
+    /** Build one target snapshot with selectable commit semantics and attribution properties. */
+    private LakehouseEvent snapshotEvent(
+            SchedulingIntent intent,
+            String eventSuffix,
+            String snapshotId,
+            String commitKind,
+            boolean dataChange,
+            Map<String, Object> properties) {
+        String[] target = intent.getTargetAssetKey().split("\\.", 4);
         return LakehouseEvent.builder()
-                .eventId("ha-confirmation-" + intent.getIntentKey())
+                .eventId("ha-confirmation-" + intent.getIntentKey() + "-" + eventSuffix)
                 .eventType("SNAPSHOT_COMMITTED")
                 .sourceType("PAIMON")
                 .catalogName(target[0])
@@ -928,8 +1175,8 @@ class SchedulerRecoveryE2EIT {
                 .partitionName(target[3])
                 .snapshotId(snapshotId)
                 .watermark(intent.getBizDate())
-                .commitKind("APPEND")
-                .dataChange(true)
+                .commitKind(commitKind)
+                .dataChange(dataChange)
                 .commitTime(LocalDateTime.now())
                 .payloadJson(Map.of(
                         "snapshotProperties", Map.copyOf(properties),
@@ -976,6 +1223,51 @@ class SchedulerRecoveryE2EIT {
         properties.put("lakehouse-flow.scheduling-backlog.metrics.fixed-delay-ms", 3_600_000);
         properties.put("lakehouse-flow.scheduling-intent-delivery.metrics.fixed-delay-ms", 3_600_000);
         return properties;
+    }
+
+    /** Start the packaged application as an independent scheduler operating-system process. */
+    private ChildSchedulerProcess startIndependentSchedulerProcess() throws IOException {
+        String configuredJar = System.getProperty("lakehouse.flow.e2e.boot-jar");
+        if (configuredJar == null || configuredJar.isBlank()) {
+            throw new IllegalStateException("lakehouse.flow.e2e.boot-jar is required");
+        }
+        Path bootJar = Path.of(configuredJar).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(bootJar)) {
+            throw new IllegalStateException("Packaged Lakehouse Flow application not found: " + bootJar);
+        }
+        Path output = Files.createTempFile("lakehouse-flow-independent-scheduler-", ".log");
+        List<String> command = List.of(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-jar",
+                bootJar.toString(),
+                "--spring.main.web-application-type=none",
+                "--spring.main.banner-mode=off",
+                "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
+                "--spring.datasource.username=" + POSTGRES.getUsername(),
+                "--spring.datasource.password=" + POSTGRES.getPassword(),
+                "--spring.datasource.driver-class-name=org.postgresql.Driver",
+                "--spring.flyway.enabled=false",
+                "--spring.jpa.hibernate.ddl-auto=validate",
+                "--lakehouse-flow.scheduling-intent-outbox.enabled=false",
+                "--lakehouse-flow.scheduling-intent-delivery.channel=HTTP",
+                "--lakehouse-flow.scheduling-intent-delivery.publisher.enabled=true",
+                "--lakehouse-flow.scheduling-intent-delivery.publisher.owner=independent-jvm",
+                "--lakehouse-flow.scheduling-intent-delivery.publisher.fixed-delay-ms=50",
+                "--lakehouse-flow.scheduling-intent-delivery.publisher.batch-size=1",
+                "--lakehouse-flow.scheduling-intent-delivery.publisher.claim-lease=PT1S",
+                "--lakehouse-flow.scheduling-intent-delivery.http.request-timeout=PT30S",
+                "--lakehouse-flow.job-control-intent-delivery.publisher.enabled=false",
+                "--lakehouse-flow.snapshot-confirmation.enabled=false",
+                "--lakehouse-flow.job-control-snapshot-confirmation.enabled=false",
+                "--lakehouse-flow.snapshot-sources.scanner.enabled=false",
+                "--lakehouse-flow.snapshot-sources.reconciliation.enabled=false",
+                "--lakehouse-flow.scheduling-backlog.metrics.fixed-delay-ms=3600000",
+                "--lakehouse-flow.scheduling-intent-delivery.metrics.fixed-delay-ms=3600000");
+        Process process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .redirectOutput(output.toFile())
+                .start();
+        return new ChildSchedulerProcess(process, output);
     }
 
     /** Run two operations at the same instant and capture values or failures deterministically. */
@@ -1036,6 +1328,34 @@ class SchedulerRecoveryE2EIT {
         /** Return whether the operation completed without throwing. */
         private boolean succeeded() {
             return failure == null;
+        }
+    }
+
+    /** Independent packaged scheduler process and its diagnostic output. */
+    private record ChildSchedulerProcess(Process process, Path outputPath) implements AutoCloseable {
+
+        /** Forcefully stop the scheduler process and wait for operating-system termination. */
+        private void forceStop() throws InterruptedException {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
+            assertThat(process.waitFor(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        /** Read child output for a failed startup assertion. */
+        private String output() {
+            try {
+                return Files.readString(outputPath);
+            } catch (IOException exception) {
+                return "Unable to read child output: " + exception.getMessage();
+            }
+        }
+
+        /** Stop a surviving child and remove its temporary diagnostic file. */
+        @Override
+        public void close() throws Exception {
+            forceStop();
+            Files.deleteIfExists(outputPath);
         }
     }
 
@@ -1165,6 +1485,86 @@ class SchedulerRecoveryE2EIT {
         /** Stop the endpoint and its request executor. */
         @Override
         public void close() {
+            server.stop(0);
+            executor.shutdownNow();
+        }
+    }
+
+    /** HTTP consumer that withholds the first ACK until the publishing JVM is terminated. */
+    private static final class BlockingIdempotentHttpEndpoint implements AutoCloseable {
+
+        private final HttpServer server;
+        private final ExecutorService executor;
+        private final CountDownLatch firstRequest = new CountDownLatch(1);
+        private final CountDownLatch firstResponseRelease = new CountDownLatch(1);
+        private final AtomicInteger requestCount = new AtomicInteger();
+        private final Set<String> uniqueIntentKeys = ConcurrentHashMap.newKeySet();
+
+        /** Create and start the process-interruption HTTP endpoint. */
+        private BlockingIdempotentHttpEndpoint() throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            executor = Executors.newCachedThreadPool();
+            server.setExecutor(executor);
+            server.createContext("/intents", this::receive);
+            server.start();
+        }
+
+        /** Start one endpoint and convert checked setup failures into test failures. */
+        private static BlockingIdempotentHttpEndpoint start() {
+            try {
+                return new BlockingIdempotentHttpEndpoint();
+            } catch (IOException exception) {
+                throw new IllegalStateException("Unable to start process-interruption endpoint", exception);
+            }
+        }
+
+        /** Record delivery, hold the first ACK, and immediately acknowledge later retries. */
+        private void receive(HttpExchange exchange) throws IOException {
+            exchange.getRequestBody().readAllBytes();
+            int attempt = requestCount.incrementAndGet();
+            uniqueIntentKeys.add(exchange.getRequestHeaders().getFirst("Idempotency-Key"));
+            try {
+                if (attempt == 1) {
+                    firstRequest.countDown();
+                    firstResponseRelease.await(30, TimeUnit.SECONDS);
+                }
+                exchange.sendResponseHeaders(202, -1);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        }
+
+        /** Wait until the child process reaches the transport boundary. */
+        private boolean awaitFirstRequest(Duration timeout) throws InterruptedException {
+            return firstRequest.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        /** Release the first response after the publishing child has been killed. */
+        private void releaseFirstResponse() {
+            firstResponseRelease.countDown();
+        }
+
+        /** Return the local publication destination. */
+        private String url() {
+            return "http://127.0.0.1:" + server.getAddress().getPort() + "/intents";
+        }
+
+        /** Return all physical HTTP attempts. */
+        private int requestCount() {
+            return requestCount.get();
+        }
+
+        /** Return downstream work admitted after intent-key deduplication. */
+        private int uniqueIntentCount() {
+            return uniqueIntentKeys.size();
+        }
+
+        /** Stop the endpoint and release any blocked request thread. */
+        @Override
+        public void close() {
+            firstResponseRelease.countDown();
             server.stop(0);
             executor.shutdownNow();
         }

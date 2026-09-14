@@ -2,6 +2,8 @@
 
 本文档描述当前仓库真实可用的开发方式。更完整的目标架构见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
+首次参与开发时先阅读 [GLOSSARY.md](./GLOSSARY.md)，避免把调度意图、任务实例和外部执行作业混为一谈。
+
 ## 环境要求
 
 - Java 17+

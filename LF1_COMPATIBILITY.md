@@ -83,4 +83,4 @@ delivery ACK 只记录传输成功。上述幂等规则都不能用下游 `SUCCE
 4. 使用 JDK 17 运行 `./mvnw clean verify -DskipITs`。
 5. 任何冻结边界变更都必须重新运行整体 Testcontainers E2E，验证 DB/HTTP 投递、全部 action、结果语义、流批汇聚和升级路径。
 
-2026-09-14 使用 JDK 17.0.12 执行 `./mvnw clean verify`：396 个单元/启动测试和 8 个整体 E2E 全部通过。E2E 包含两类 intent 的 `DATABASE_TABLE` 与 HTTP 交付、完整 action、流式 writer 受控补数切换、四类正交结果，以及 Flyway V22 到 V23 真实升级；STB-5 因此正式冻结。
+2026-09-14 使用 JDK 17.0.12 执行 `./mvnw clean verify`：单元、启动和整体 E2E 全部通过。E2E 包含两类 intent 的 `DATABASE_TABLE` 与 HTTP 交付、完整 action、流式 writer 受控补数切换、四类正交结果、独立 scheduler JVM 中断恢复，以及 Flyway V22 到 V23 真实升级；STB-5 因此正式冻结。精确测试数量和覆盖率以 [PHASE2_PROGRESS.md](./PHASE2_PROGRESS.md) 为准。

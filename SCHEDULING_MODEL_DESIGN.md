@@ -4,6 +4,8 @@
 
 本文是 Lakehouse Flow 当前对象模型与调度语义的权威设计基线。实现进度、版本目标和未完成项以 `PHASE2_PROGRESS.md` 为准；本文中的模型约束不是执行器设计，也不能被下游任务状态回调替代。
 
+本文使用的调度意图（Intent）、归因（Attribution）、准入（Admission）、补数批次（BackfillBatch）等术语见 [GLOSSARY.md](./GLOSSARY.md)。
+
 Lakehouse Flow 的核心目标不是做一个新的 DolphinScheduler、Airflow 或任务执行平台，而是做一个面向湖仓 snapshot 推进的调度决策系统：
 
 ```text
@@ -319,7 +321,7 @@ Lakehouse Flow 参考的 action 只有这些：
 - `deliverBefore`, `requestedBy`, `reason`, `createdAt`
 - `instructionPayloadJson`: 独立版本化控制契约，不包含 task/workflow/bizDate/input vector
 
-`JobControlIntentDelivery` 复用现有 claim lease、fencing token、指数退避、最大尝试和死信算法，但保留到控制意图的明确外键。当前 `SchedulingIntent` 已由 `task_instance_id NOT NULL` 和 task 唯一约束定义为数据处理意图，G20 不应把它改造成带大量可空字段的多态对象。
+`JobControlIntentDelivery` 复用现有 claim lease、fencing token、指数退避、最大尝试和死信算法，但保留到控制意图的明确外键。`SchedulingIntent` 由 `task_instance_id NOT NULL` 和 task 唯一约束定义为数据处理意图，不得把它改造成带大量可空字段的多态对象。
 
 控制意图的 delivery ACK 只说明操作已送达。首个匹配 `jobControlIntentKey + writerJobKey + writerEpoch` 的目标业务 snapshot 可以确认该 writer 世代产生了数据；没有业务数据变化时不得制造 snapshot，也不能把 `SNAPSHOT_NOT_ADVANCED` 解释为执行引擎作业启动失败。
 

@@ -39,17 +39,16 @@ Password: postgres
 
 这些凭据只用于本地开发。Compose 只创建空数据库；应用启动时，Flyway 从 classpath 按版本顺序执行 `lakehouse-flow-dao/src/main/resources/db/migration` 下的迁移。
 
-## 2. 完整验证
+## 2. 开发验证
 
 ```bash
-./mvnw clean verify
+./mvnw clean verify -DskipITs
 ```
 
 该命令会：
 
-- 编译全部十三个模块；
+- 编译 12 个子模块（连同根聚合项目共 13 个 reactor project）；
 - 运行 JUnit/Mockito 测试；
-- 使用 Testcontainers 运行 PostgreSQL、MySQL、Flink 和 Paimon 整体 E2E；
 - 检查 service line coverage >= 90%、branch coverage >= 65%；
 - 生成可执行 Spring Boot JAR。
 
@@ -59,7 +58,7 @@ Password: postgres
 ./mvnw -pl lakehouse-flow-service -am test
 ```
 
-完成一项变更前仍应执行全量 `clean verify`。
+发布候选或集中 E2E 验收时再运行不带 `-DskipITs` 的 `./mvnw clean verify`，它会额外启动 PostgreSQL、MySQL、Flink 和 Paimon Testcontainers。用例和验收口径见 [E2E_TEST_CASES.md](./E2E_TEST_CASES.md)。
 
 ## 3. 启动应用
 
@@ -171,4 +170,5 @@ docker compose up -d postgres
 - `DATABASE_OPERATIONS.md`：PostgreSQL 升级、恢复与保留策略
 - `OBSERVABILITY.md`：Prometheus 指标、告警和证据入口
 - `DEVELOPMENT.md`：开发规则
+- `E2E_TEST_CASES.md`：整体 E2E 用例与覆盖状态
 - `PHASE2_PROGRESS.md`：当前进度和唯一待办基准

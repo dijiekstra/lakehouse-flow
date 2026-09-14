@@ -1,10 +1,11 @@
 # Outbound Intent 下游契约
 
-**当前 SchedulingIntent 契约版本**: 1.3；字段与兼容策略已完成 LF-1.0 冻结
-**LF-1.0 目标 SchedulingIntent 契约版本**: 1.3
-**LF-1.0 目标 JobControlIntent 契约版本**: 1.0；字段与兼容策略已完成 LF-1.0 冻结
+**SchedulingIntent 契约版本**: 1.3；字段与兼容策略已完成 LF-1.0 冻结
+**JobControlIntent 契约版本**: 1.0；字段与兼容策略已完成 LF-1.0 冻结
 **适用通道**: Database Outbox、HTTP、MQ
 **LF-1.0 状态**: 两类契约的 JSON Schema、REST surface、未知字段和 migration 兼容回归已完成；DATABASE_TABLE、HTTP、action、流批边界及 V22 到 V23 升级已通过整体 E2E
+
+“意图（Intent）”在本项目中是声明式调度指令，不是任务运行状态；相关中文术语见 [GLOSSARY.md](./GLOSSARY.md)。
 
 ## 1. 契约目标
 
@@ -13,7 +14,7 @@ Lakehouse Flow 只负责产生和投递出站意图，不执行任务，也不�
 - `SchedulingIntent` / `DATA_PROCESSING`：绑定一个 `TaskInstance`，表达“处理这次冻结的数据范围”，并等待目标业务 snapshot 确认。
 - `JobControlIntent` / `JOB_CONTROL`：绑定一个 `WriterJobBinding`，表达平台对常驻作业的显式启动或重启操作，不绑定 `WorkflowInstance`、`TaskInstance` 或 `bizDate`。
 
-两者可以复用数据库、HTTP 和 MQ publisher SPI 以及相同的至少一次投递状态机，但必须保持独立的领域记录和审计接口。当前 `SchedulingIntent` 受 `task_instance_id NOT NULL` 和 task 唯一约束保护，G20 不得通过伪造 task 或把这些字段改为可空来承载作业生命周期。
+两者复用数据库、HTTP 和 MQ publisher SPI 以及相同的至少一次投递状态机，但保持独立的领域记录和审计接口。`SchedulingIntent` 受 `task_instance_id NOT NULL` 和 task 唯一约束保护，不得通过伪造 task 或把这些字段改为可空来承载作业生命周期。
 
 下游接收调度意图后负责实际运行，并在已经完整覆盖本次冻结输入边界的目标资产 snapshot 中写入意图指定的属性。Lakehouse Flow 通过目标 snapshot 的属性、格式适配器给出的数据变更分类和变更分区完成归因与结果确认，不接收执行成功或失败回调。
 

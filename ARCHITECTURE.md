@@ -1,4 +1,6 @@
-# Architecture
+# Lakehouse Flow 架构
+
+调度意图（Intent）、归因（Attribution）、准入（Admission）等术语见 [GLOSSARY.md](./GLOSSARY.md)。
 
 Lakehouse Flow 的目标是构建一个独立的湖仓资产状态调度决策层。它不应该先假设 cron 时间点已经可靠，而是先判断上游表或分区的 snapshot、watermark、quality、schema 状态是否真的满足下游任务要求。
 
@@ -39,7 +41,7 @@ LakehouseSnapshotScanner
   -> SnapshotConfirmationService
   -> DagProgressionService
 
-LF-1.0 G20 target branch
+platform job-control branch
   -> platform START_JOB / RESTART_JOB operation
   -> WriterJobBinding + next writerEpoch
   -> JobControlIntent / JobControlIntentDelivery
@@ -50,20 +52,25 @@ LF-1.0 G20 target branch
 
 已实现模块：
 
-- `lakehouse-flow-model`: `LakehouseEvent`, `AssetState`, `DependencyCondition`, `FlowPlan`, `FlowPlanVersion`, `ScheduleNode`, `WorkflowInstance`, `TaskInstance`, `SchedulingIntent`, `SchedulingIntentDelivery`, `TriggerHistory`, `SchedulingAction`, `EventConsumerOffset`
+- `lakehouse-flow-common`: 共享契约、枚举和 snapshot 比较工具
+- `lakehouse-flow-model`: Flow、Node、实例、snapshot、action、backfill、delivery 和 writer 持久化模型
 - `lakehouse-flow-dao`: Spring Data JPA repository 与 PostgreSQL Flyway schema
-- `lakehouse-flow-service`: 事件摄入辅助、资产状态推进、条件评估、snapshot 进展确认、FlowPlan 管理、调度意图交付、action、实例服务、触发审计服务
-- `lakehouse-flow-api`: FlowPlan/Node、action、instance evidence、task scheduling intent 只读审计 API
-- `lakehouse-flow-scheduler`: 内部 outbox 发布和 snapshot 确认扫描循环
-- `lakehouse-flow-integration`: 格式无关 snapshot source SPI、通用扫描器与 Paimon Catalog API 适配器
+- `lakehouse-flow-service`: 资产、依赖、实例、意图、补数、writer control、snapshot 确认和运维服务
+- `lakehouse-flow-integration`: 格式无关 snapshot source SPI、通用扫描器、摄入对账与 Paimon Catalog API 适配器
+- `lakehouse-flow-flink-paimon`: 下游复用的 Paimon writer adapter、归因属性和 writer epoch fencing
+- `lakehouse-flow-api`: FlowPlan/Node、action、instance evidence、writer control、intent 与运维 REST API
+- `lakehouse-flow-scheduler`: 内部 outbox、可靠投递、准入、snapshot 确认和指标扫描循环
 - `lakehouse-flow-boot`: Spring Boot 启动入口
+- `lakehouse-flow-test`: 跨模块共享测试夹具
+- `lakehouse-flow-e2e-jobs`: 提交到真实 Flink 容器的 CDC、批处理和 Paimon writer 测试作业
+- `lakehouse-flow-e2e`: 整体 Testcontainers 装配与验收入口
 
-待完成的 `LF-1.0` 边界：
+已实现的 `LF-1.0` 边界：
 
-- 接入真实业务库到 Flink CDC 持续流式 ODS，并实现同时覆盖流式 checkpoint 与批式结束提交的 Paimon writer-side adapter
-- 增加 `WriterJobBinding`、独立 `JobControlIntent`、writer epoch 和单表单写入者约束；当前 task-bound `SchedulingIntent` 不承担常驻作业生命周期
-- 整体 Testcontainers E2E 验证 PostgreSQL 多 scheduler 竞争、事务回滚、claim 重占、fencing、DB/HTTP 投递和 offset 恢复
-- snapshot 超时前校验 source 证据完整性，并补齐阻塞原因与 source 对账的最小运维 API
+- 真实业务库通过 Flink CDC 持续流式写入 ODS，Paimon writer-side adapter 同时覆盖流式 checkpoint 与批式结束提交。
+- `WriterJobBinding`、独立 `JobControlIntent`、writer epoch 和单表单写入者约束均已落地；task-bound `SchedulingIntent` 只承担有界数据处理意图。
+- 整体 Testcontainers E2E 已验证 PostgreSQL 多 scheduler 竞争、独立 JVM 中断、事务回滚、claim 重占、fencing、DB/HTTP 投递和 offset 恢复。
+- snapshot 超时会先校验 source 证据完整性，阻塞原因、source 对账和 snapshot 证据均有运维 API。
 
 Iceberg/Hudi source、具体 MQ 产品绑定、可信身份/RBAC、Web UI 和高级并发策略不属于 `LF-1.0`。
 
@@ -78,7 +85,7 @@ Lakehouse Flow 必须区分“计算模式”和“调度激活方式”，不�
 - 对补数、重跑等显式数据范围，流式 writer 在处理到冻结输入向量的提交上写入完成属性，批式 writer 在有界范围的最终数据提交上写入完成属性。具体 checkpoint、job-end 或 commit hook 由执行适配器解释，不成为 Flow 字段。
 - `lakehouse-flow.final=true` 是“该 snapshot 已完成本次 intent 的逻辑输入范围”的兼容属性名，不表示执行引擎作业已结束。普通中间提交不得携带它。
 
-因此 Flow 定义只需要冻结 `processingMode`。`STREAMING` 的持续激活和 `BATCH` 的按意图激活由该模式直接派生，不再额外持久化 `activationMode` 或可配置的 `completionBoundary`。运行时数据处理 intent 冻结完整 input snapshot/watermark vector，然后等待可归因目标 snapshot。流式与批式共享同一套 DAG、补数、重跑、互斥和结果状态机；该 G19 模型已经进入 Java 实现和 `SchedulingIntent` 1.3。
+因此 Flow 定义只需要冻结 `processingMode`。`STREAMING` 的持续激活和 `BATCH` 的按意图激活由该模式直接派生，不再额外持久化 `activationMode` 或可配置的 `completionBoundary`。运行时数据处理 intent 冻结完整 input snapshot/watermark vector，然后等待可归因目标 snapshot。流式与批式共享同一套 DAG、补数、重跑、互斥和结果状态机；该模型已经进入 Java 实现和 `SchedulingIntent` 1.3。
 
 对 `STREAMING` 节点执行补数或重跑时，不把常驻作业重启状态纳入 Lakehouse Flow。Action 派生一个有明确输入向量的数据处理回放意图，可由当前流式 writer 消费，或按单写入者规则受控切换到批式运行，并以新的可归因目标 snapshot 确认。这使普通持续推进和历史回放共享同一个 BackfillBatch、DAG 门禁与 snapshot 结果模型。
 
@@ -431,10 +438,10 @@ SnapshotConfirmationScanner
 - `scheduling_intent`
 - `scheduling_intent_delivery`
 - `scheduling_target_admission`
-- `writer_job_binding`（LF-1.0 G20 目标表）
-- `writer_job_epoch`（LF-1.0 G20 目标表；保存当前 epoch、活动模式、holder intent 和租约）
-- `job_control_intent`（LF-1.0 G20 目标表；绑定 writer，不绑定 task/workflow/bizDate）
-- `job_control_intent_delivery`（LF-1.0 G20 目标表；复用现有 delivery 算法，保持明确外键）
+- `writer_job_binding`
+- `writer_job_epoch`（保存当前 epoch、活动模式、holder intent 和租约）
+- `job_control_intent`（绑定 writer，不绑定 task/workflow/bizDate）
+- `job_control_intent_delivery`（复用现有 delivery 算法，保持明确外键）
 
 注意：
 

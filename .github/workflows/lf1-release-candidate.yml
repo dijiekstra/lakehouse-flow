@@ -72,7 +72,8 @@ jobs:
         run: |
           mkdir -p release-bundle
           cp "lakehouse-flow-boot/target/lakehouse-flow-boot-${BUILD_VERSION}.jar" release-bundle/
-          cp LICENSE README.md LF1_COMPATIBILITY.md SCHEDULING_INTENT_CONTRACT.md release-bundle/
+          cp LICENSE README.md DOCS_INDEX.md GLOSSARY.md LF1_COMPATIBILITY.md release-bundle/
+          cp SCHEDULING_INTENT_CONTRACT.md E2E_TEST_CASES.md release-bundle/
           cp OPERATIONS_RUNBOOK.md DATABASE_OPERATIONS.md RELEASE_CHECKLIST.md release-bundle/
           {
             echo "Project: Lakehouse Flow"
